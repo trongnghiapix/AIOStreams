@@ -1,7 +1,11 @@
-**/node_modules/
-**/dist
-**/out
-**/.next
-**/data
-.env
+node_modules
 .git
+.github
+.env*
+!.env.sample
+*.log
+.vscode
+.idea
+data
+*.md
+!README.md

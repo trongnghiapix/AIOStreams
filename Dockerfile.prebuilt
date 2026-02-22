@@ -1,0 +1,43 @@
+FROM node:24-slim
+
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+RUN corepack enable
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+COPY packages/server/package*.json ./packages/server/
+COPY packages/core/package*.json ./packages/core/
+COPY packages/frontend/package*.json ./packages/frontend/
+COPY pnpm-workspace.yaml ./pnpm-workspace.yaml
+COPY pnpm-lock.yaml ./pnpm-lock.yaml
+COPY patches ./patches
+
+# Install production dependencies only
+RUN pnpm install --prod --frozen-lockfile
+
+# Copy pre-built dist folders and other necessary files
+COPY packages/server/dist ./packages/server/dist
+COPY packages/core/dist ./packages/core/dist
+COPY packages/frontend/out ./packages/frontend/out
+COPY resources ./resources
+COPY scripts ./scripts
+COPY LICENSE ./
+
+# Create data directory
+RUN mkdir -p /app/data
+
+# Expose port
+EXPOSE 3000
+
+# Set NODE_ENV
+ENV NODE_ENV=production
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD node scripts/healthcheck.js
+
+# Start the application
+CMD ["node", "packages/server/dist/server.js"]

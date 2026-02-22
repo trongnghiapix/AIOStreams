@@ -1,8 +1,6 @@
 services:
   aiostreams:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: trongnghiapix/aiostreams:latest
     container_name: aiostreams
     restart: unless-stopped
     ports:
