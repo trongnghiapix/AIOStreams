@@ -54,7 +54,7 @@ cat > .env << EOF
 
 # --- Network Configuration ---
 PORT=3000
-BASE_URL=http://103.116.52.252:10875
+BASE_URL=http://nghianguyen.thuevpsgiare.com.vn
 
 # --- Security ---
 SECRET_KEY=${SECRET_KEY}
@@ -92,7 +92,7 @@ echo ""
 docker-compose -f compose.vps.yaml ps
 echo ""
 echo "🎉 AIOStreams is now running!"
-echo "📱 Add to Stremio: http://103.116.52.252:10875/manifest.json"
+echo "📱 Add to Stremio: http://nghianguyen.thuevpsgiare.com.vn/manifest.json"
 echo ""
 echo "📊 View logs: docker-compose -f compose.vps.yaml logs -f"
 echo "🔄 Restart: docker-compose -f compose.vps.yaml restart"
