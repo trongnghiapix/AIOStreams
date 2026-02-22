@@ -117,7 +117,7 @@ Write-Host ""
 $deploy = Read-Host "Deploy len VPS? (y/n)"
 if ($deploy -eq 'y') {
     Write-Host "Pulling new image on VPS..." -ForegroundColor Yellow
-    ssh root@103.116.52.252 -p 10875 "cd ~/aiostreams && docker-compose pull && docker-compose up -d --force-recreate"
+    ssh root@103.116.52.252 -p 10875 "cd ~/aiostreams && docker-compose pull && docker-compose down && docker-compose up -d"
     
     Write-Host ""
     Write-Host "Deployed!" -ForegroundColor Green
