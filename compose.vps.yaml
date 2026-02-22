@@ -6,7 +6,7 @@ services:
     container_name: aiostreams
     restart: unless-stopped
     ports:
-      - "10875:3000"
+      - '10875:3000'
     env_file:
       - .env
     volumes:
