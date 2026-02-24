@@ -1,18 +1,18 @@
 import { ParsedStream, UserData } from '../db/schemas.js';
 import * as constants from '../utils/constants.js';
+import { Env } from '../utils/env.js';
 import { createLogger } from '../utils/logger.js';
 import {
-  formatBytes,
-  formatSmartBytes,
   formatBitrate,
+  formatBytes,
   formatDuration,
   formatHours,
+  formatSmartBitrate,
+  formatSmartBytes,
   languageToCode,
   languageToEmoji,
   makeSmall,
-  formatSmartBitrate,
 } from './utils.js';
-import { Env } from '../utils/env.js';
 
 const logger = createLogger('formatter');
 const MAX_TEMPLATE_DEPTH = 5;
@@ -65,17 +65,21 @@ export interface ParseValue {
     quality: string | null;
     resolution: string | null;
     languages: string[] | null;
-    subtitleLanguages: string[] | null;
-    fansubLanguages: string[] | null;
     uLanguages: string[] | null;
+    subtitleLanguages: string[] | null;
+    uSubtitleLanguages: string[] | null;
     languageEmojis: string[] | null;
-    subtitleLanguageEmojis: string[] | null;
-    fansubLanguageEmojis: string[] | null;
     uLanguageEmojis: string[] | null;
+    subtitleLanguageEmojis: string[] | null;
+    uSubtitleLanguageEmojis: string[] | null;
     languageCodes: string[] | null;
     uLanguageCodes: string[] | null;
+    subtitleLanguageCodes: string[] | null;
+    uSubtitleLanguageCodes: string[] | null;
     smallLanguageCodes: string[] | null;
     uSmallLanguageCodes: string[] | null;
+    smallSubtitleLanguageCodes: string[] | null;
+    uSmallSubtitleLanguageCodes: string[] | null;
     wedontknowwhatakilometeris: string[] | null;
     uWedontknowwhatakilometeris: string[] | null;
     visualTags: string[] | null;
@@ -113,7 +117,6 @@ export interface ParseValue {
     seasonPack: boolean;
     seeders: number | null;
     private: boolean;
-    freeleech: boolean | null;
     age: string | null;
     ageHours: number | null;
     duration: number | null;
@@ -338,25 +341,6 @@ export abstract class BaseFormatter {
         })
       : null;
 
-    const fansubLanguages = stream.parsedFile?.fansubLanguages || null;
-    const sortedFansubLanguages = fansubLanguages
-      ? [...fansubLanguages].sort((a, b) => {
-          const aIndex = userSpecifiedLanguages.indexOf(a as any);
-          const bIndex = userSpecifiedLanguages.indexOf(b as any);
-
-          const aInUser = aIndex !== -1;
-          const bInUser = bIndex !== -1;
-
-          return aInUser && bInUser
-            ? aIndex - bIndex
-            : aInUser
-              ? -1
-              : bInUser
-                ? 1
-                : fansubLanguages.indexOf(a) - fansubLanguages.indexOf(b);
-        })
-      : null;
-
     const formattedAge = stream.age ? formatHours(stream.age) : null;
     const parseValue: ParseValue = {
       config: {
@@ -371,11 +355,16 @@ export abstract class BaseFormatter {
         quality: stream.parsedFile?.quality || null,
         resolution: stream.parsedFile?.resolution || null,
         languages: sortedLanguages || null,
-        subtitleLanguages: sortedSubtitleLanguages || null,
-        fansubLanguages: sortedFansubLanguages || null,
         uLanguages: onlyUserSpecifiedLanguages || null,
+        subtitleLanguages: sortedSubtitleLanguages || null,
+        uSubtitleLanguages: onlyUserSpecifiedLanguages || null,
         languageEmojis: sortedLanguages
           ? sortedLanguages
+              .map((lang) => languageToEmoji(lang) || lang)
+              .filter((value, index, self) => self.indexOf(value) === index)
+          : null,
+        uLanguageEmojis: onlyUserSpecifiedLanguages
+          ? onlyUserSpecifiedLanguages
               .map((lang) => languageToEmoji(lang) || lang)
               .filter((value, index, self) => self.indexOf(value) === index)
           : null,
@@ -384,12 +373,7 @@ export abstract class BaseFormatter {
               .map((lang) => languageToEmoji(lang) || lang)
               .filter((value, index, self) => self.indexOf(value) === index)
           : null,
-        fansubLanguageEmojis: sortedFansubLanguages
-          ? sortedFansubLanguages
-              .map((lang) => languageToEmoji(lang) || lang)
-              .filter((value, index, self) => self.indexOf(value) === index)
-          : null,
-        uLanguageEmojis: onlyUserSpecifiedLanguages
+        uSubtitleLanguageEmojis: onlyUserSpecifiedLanguages
           ? onlyUserSpecifiedLanguages
               .map((lang) => languageToEmoji(lang) || lang)
               .filter((value, index, self) => self.indexOf(value) === index)
@@ -404,6 +388,16 @@ export abstract class BaseFormatter {
               .map((lang) => languageToCode(lang) || lang.toUpperCase())
               .filter((value, index, self) => self.indexOf(value) === index)
           : null,
+        subtitleLanguageCodes: sortedSubtitleLanguages
+          ? sortedSubtitleLanguages
+              .map((lang) => languageToCode(lang) || lang.toUpperCase())
+              .filter((value, index, self) => self.indexOf(value) === index)
+          : null,
+        uSubtitleLanguageCodes: onlyUserSpecifiedLanguages
+          ? onlyUserSpecifiedLanguages
+              .map((lang) => languageToCode(lang) || lang.toUpperCase())
+              .filter((value, index, self) => self.indexOf(value) === index)
+          : null,
         smallLanguageCodes: sortedLanguages
           ? sortedLanguages
               .map((lang) => languageToCode(lang) || lang)
@@ -411,6 +405,18 @@ export abstract class BaseFormatter {
               .map((code) => makeSmall(code))
           : null,
         uSmallLanguageCodes: onlyUserSpecifiedLanguages
+          ? onlyUserSpecifiedLanguages
+              .map((lang) => languageToCode(lang) || lang)
+              .filter((value, index, self) => self.indexOf(value) === index)
+              .map((code) => makeSmall(code))
+          : null,
+        smallSubtitleLanguageCodes: sortedSubtitleLanguages
+          ? sortedSubtitleLanguages
+              .map((lang) => languageToCode(lang) || lang)
+              .filter((value, index, self) => self.indexOf(value) === index)
+              .map((code) => makeSmall(code))
+          : null,
+        uSmallSubtitleLanguageCodes: onlyUserSpecifiedLanguages
           ? onlyUserSpecifiedLanguages
               .map((lang) => languageToCode(lang) || lang)
               .filter((value, index, self) => self.indexOf(value) === index)
@@ -458,7 +464,6 @@ export abstract class BaseFormatter {
         indexer: stream.indexer || null,
         seeders: stream.torrent?.seeders ?? null,
         private: stream.torrent?.private ?? false,
-        freeleech: stream.torrent?.freeleech ?? null,
         year: stream.parsedFile?.year || null,
         type: stream.type || null,
         title: stream.parsedFile?.title || null,
@@ -949,7 +954,7 @@ export abstract class BaseFormatter {
           // Extract the content from remove(['"]...['"])
           const content = _mod.substring(8, _mod.length - 2);
 
-          if (content) return variable.replaceAll(content,'');
+          if (content) return variable.replaceAll(content, '');
         }
         case mod.startsWith('truncate(') && mod.endsWith(')'): {
           // Extract N from truncate(N)

@@ -850,7 +850,6 @@ export const ParsedFileSchema = z.object({
   audioTags: z.array(z.string()),
   languages: z.array(z.string()),
   subtitleLanguages: z.array(z.string()).optional(),
-  fansubLanguages: z.array(z.string()).optional(),
   title: z.string().optional(),
   year: z.coerce.string().optional(),
   seasons: z.array(z.number()).optional(),
@@ -911,7 +910,6 @@ export const ParsedStreamSchema = z.object({
       seeders: z.number().optional(),
       sources: z.array(z.string().min(1)).optional(),
       private: z.boolean().optional(),
-      freeleech: z.boolean().optional(),
     })
     .optional(),
   countryWhitelist: z.array(z.string().length(3)).optional(),
@@ -1171,6 +1169,7 @@ const PresetMinimalMetadataSchema = z.object({
   NAME: z.string(),
   LOGO: z.string().optional(),
   DESCRIPTION: z.string(),
+  URL: z.string(),
   DISABLED: z
     .object({
       reason: z.string(),
@@ -1187,7 +1186,6 @@ const PresetMinimalMetadataSchema = z.object({
 });
 
 const PresetMetadataSchema = PresetMinimalMetadataSchema.extend({
-  URL: z.string(),
   TIMEOUT: z.number(),
   USER_AGENT: z.string(),
 });

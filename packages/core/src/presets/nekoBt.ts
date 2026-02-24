@@ -184,18 +184,6 @@ export class NekoBtStreamParser extends BuiltinStreamParser {
             (lang: string | undefined): lang is string => lang !== undefined
           );
       }
-      // fansub languages
-      if (
-        fileMetadata.fansubLanguages &&
-        fileMetadata.fansubLanguages.length > 0
-      ) {
-        parsedFile.fansubLanguages = fileMetadata.fansubLanguages
-          .map(mapLanguageCode)
-          .map(convertLangCodeToName)
-          .filter(
-            (lang: string | undefined): lang is string => lang !== undefined
-          );
-      }
     }
 
     return parsedFile;
