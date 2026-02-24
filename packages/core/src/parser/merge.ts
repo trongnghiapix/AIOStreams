@@ -3,8 +3,55 @@ import { ParsedFile } from '../db/schemas.js';
 /**
  * Merges two arrays, deduplicating the result.
  */
-export function arrayMerge<T>(arr1: T[] | undefined, arr2: T[] | undefined): T[] {
+export function arrayMerge<T>(
+  arr1: T[] | undefined,
+  arr2: T[] | undefined
+): T[] {
   return Array.from(new Set([...(arr1 ?? []), ...(arr2 ?? [])]));
+}
+
+function richerParsedFile(
+  fileParsed: ParsedFile | undefined,
+  folderParsed: ParsedFile | undefined
+): ParsedFile | undefined {
+  if (!fileParsed) return folderParsed;
+  if (!folderParsed) return fileParsed;
+
+  // determine a parsed files richness by counting how many of the important fields are filled out.
+  const importantFields: (keyof ParsedFile)[] = [
+    'title',
+    'year',
+    'seasons',
+    'episodes',
+    'resolution',
+    'quality',
+    'encode',
+    'releaseGroup',
+    'edition',
+    'remastered',
+    'repack',
+    'uncensored',
+    'unrated',
+    'upscaled',
+    'network',
+    'container',
+    'extension',
+    'visualTags',
+    'audioTags',
+    'audioChannels',
+    'languages',
+    'seasonPack',
+  ];
+  const fileParsedRichness = importantFields.reduce(
+    (count, field) => count + (fileParsed[field] ? 1 : 0),
+    0
+  );
+  const folderParsedRichness = importantFields.reduce(
+    (count, field) => count + (folderParsed[field] ? 1 : 0),
+    0
+  );
+
+  return fileParsedRichness >= folderParsedRichness ? fileParsed : folderParsed;
 }
 
 /**
@@ -34,9 +81,10 @@ export function mergeParsedFiles(
   let seasonPack = folderParsed?.seasonPack || fileParsed?.seasonPack;
   let episodes = arrayFallback(fileParsed?.episodes, folderParsed?.episodes);
   let seasons = arrayFallback(fileParsed?.seasons, folderParsed?.seasons);
+  const richest = richerParsedFile(fileParsed, folderParsed);
 
   return {
-    title: folderParsed?.title || fileParsed?.title,
+    title: richest?.title || folderParsed?.title || fileParsed?.title,
     year: fileParsed?.year || folderParsed?.year,
     folderSeasons:
       seasons !== folderParsed?.seasons ? folderParsed?.seasons : undefined,

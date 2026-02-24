@@ -1,5 +1,5 @@
 import { DistributedLock } from '../utils/distributed-lock.js';
-import { Metadata, MetadataTitle } from './utils.js';
+import { deduplicateTitles, Metadata, MetadataTitle } from './utils.js';
 import { TMDBMetadata } from './tmdb.js';
 import { getTraktAliases } from './trakt.js';
 import { IMDBMetadata } from './imdb.js';
@@ -227,11 +227,20 @@ export class MetadataService {
                   accessToken: this.config.tmdbAccessToken,
                   apiKey: this.config.tmdbApiKey,
                 });
+                let seasonNumber = Number(id.season);
+                let episodeNumber = Number(id.episode);
+                if (animeEntry) {
+                  seasonNumber = animeEntry.tmdb?.seasonNumber ?? seasonNumber;
+                  if (animeEntry.tmdb?.fromEpisode) {
+                    episodeNumber =
+                      Number(animeEntry.tmdb.fromEpisode) + episodeNumber - 1;
+                  }
+                }
                 if (tmdbId && seasons) {
                   const tmdbNextAirDate = await tmdb.getNextEpisodeAirDate(
                     Number(tmdbId),
-                    Number(id.season),
-                    Number(id.episode),
+                    seasonNumber,
+                    episodeNumber,
                     seasons
                   );
                   if (tmdbNextAirDate && this.isDateInFuture(tmdbNextAirDate)) {
@@ -350,28 +359,13 @@ export class MetadataService {
                 year = imdbSuggestionData.year;
               if (imdbSuggestionData.yearEnd && !yearEnd)
                 yearEnd = imdbSuggestionData.yearEnd;
+            } else {
+              logger.warn(
+                `Failed to fetch IMDb suggestion data for ${imdbId}: ${imdbSuggestionResult.status === 'rejected' ? imdbSuggestionResult.reason : 'no data'}`
+              );
             }
 
-            // Deduplicate titles by lowercase title string
-            const indexMap = new Map<string, number>();
-            const uniqueTitles: MetadataTitle[] = [];
-            for (const t of titles) {
-              const key = t.title.toLowerCase();
-              const existingIndex = indexMap.get(key);
-              if (existingIndex === undefined) {
-                indexMap.set(key, uniqueTitles.length);
-                uniqueTitles.push({ title: t.title, language: t.language });
-              } else {
-                const existing = uniqueTitles[existingIndex];
-                // Prefer a title entry that has a language over one without
-                if (!existing.language && t.language) {
-                  uniqueTitles[existingIndex] = {
-                    title: t.title,
-                    language: t.language,
-                  };
-                }
-              }
-            }
+            const uniqueTitles = deduplicateTitles(titles);
 
             if (
               !uniqueTitles.length ||
@@ -400,7 +394,9 @@ export class MetadataService {
               `Found metadata for ${id.fullId} in ${getTimeTakenSincePoint(start)}`,
               {
                 ...metadata,
-                titles: metadata.titles.map((t) => t.title),
+                titles: metadata.titles.map(
+                  (t) => `${t.title}${t.language ? ` (${t.language})` : ''}`
+                ),
                 seasons: metadata.seasons?.map(
                   (s) => `{s:${s.season_number},e:${s.episode_count}}`
                 ),

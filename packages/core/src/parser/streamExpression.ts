@@ -1157,7 +1157,8 @@ export abstract class StreamExpressionEngine {
 
     this.parser.functions.pin = (
       matchedStreams: ParsedStream[],
-      position: string = 'top'
+      position: string = 'top',
+      returnMatched: boolean = false
     ) => {
       if (
         !Array.isArray(matchedStreams) ||
@@ -1175,7 +1176,7 @@ export abstract class StreamExpressionEngine {
         this._pinInstructions.set(stream.id, position as 'top' | 'bottom');
       }
 
-      return [];
+      return returnMatched ? matchedStreams : [];
     };
   }
 

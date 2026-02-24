@@ -60,7 +60,12 @@ export class TorznabAddon extends BaseNabAddon<NabAddonConfig, TorznabApi> {
       if (seenTorrents.has(infoHash ?? downloadUrl!)) continue;
       seenTorrents.add(infoHash ?? downloadUrl!);
 
-      const languages = parseNabLanguages(result.torznab?.language);
+      const languages = [
+        ...(result.torznab?.language
+          ? parseNabLanguages(result.torznab.language)
+          : []),
+        ...(result.torznab?.subs ? parseNabLanguages(result.torznab.subs) : []),
+      ];
 
       torrents.push({
         confirmed: meta.searchType === 'id',
@@ -73,6 +78,10 @@ export class TorznabAddon extends BaseNabAddon<NabAddonConfig, TorznabApi> {
           typeof result.torznab?.seeders === 'number' &&
           ![-1, 999].includes(result.torznab.seeders)
             ? result.torznab.seeders
+            : undefined,
+        downloadvolumefactor:
+          typeof result.torznab?.downloadvolumefactor === 'number'
+            ? result.torznab.downloadvolumefactor
             : undefined,
         indexer: result.jackettindexer?.name ?? undefined,
         title: result.title,
