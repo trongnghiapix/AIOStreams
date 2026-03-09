@@ -1,77 +1,81 @@
 import { PresetMetadata, PresetMinimalMetadata } from '../db/index.js';
-import { AICompanionPreset } from './aiCompanion.js';
-import { AIOStreamsPreset } from './aiostreams.js';
-import { AIOSubtitlePreset } from './aiosubtitle.js';
-import { AISearchPreset } from './aiSearch.js';
-import { AnimeCatalogsPreset } from './animeCatalogs.js';
-import { AnimeKitsuPreset } from './animeKitsu.js';
-import { AnimeToshoPreset } from './animetosho.js';
-import { ArgentinaTVPreset } from './argentinaTv.js';
-import { AStreamPreset } from './aStream.js';
-import { BitmagnetPreset } from './bitmagnet.js';
-import { BrazucaTorrentsPreset } from './brazucaTorrents.js';
 import { CometPreset } from './comet.js';
-import { ContentDeepDivePreset } from './contentDeepDive.js';
+import { MeteorPreset } from './meteor.js';
 import { CustomPreset } from './custom.js';
-import { DcUniversePreset } from './dcUniverse.js';
-import { DebridioIC4APreset } from './debridioIc4a.js';
-import { DebridioPreset } from './debridioScraper.js';
-import { DebridioTmdbPreset } from './debridioTmdb.js';
-import { DebridioTvPreset } from './debridioTv.js';
-import { DebridioTvdbPreset } from './debridioTvdb.js';
-import { DebridioWatchtowerPreset } from './debridioWatchtower.js';
-import { DMMCastPreset } from './dmmCast.js';
-import { DoctorWhoUniversePreset } from './doctorWhoUniverse.js';
+import { MediaFusionPreset } from './mediafusion.js';
+import { StremthruStorePreset } from './stremthruStore.js';
+import { TorrentioPreset } from './torrentio.js';
+import { TorboxAddonPreset } from './torbox.js';
 import { EasynewsPreset } from './easynews.js';
 import { EasynewsPlusPreset } from './easynewsPlus.js';
 import { EasynewsPlusPlusPreset } from './easynewsPlusPlus.js';
-import { EasynewsSearchPreset } from './easynewsSearch.js';
-import { EztvPreset } from './eztv.js';
-import { FKStreamPreset } from './fkstream.js';
-import { GDrivePreset } from './gdrive.js';
-import { Preset } from './index.js';
-import { JackettPreset } from './jackett.js';
+import { StremthruTorzPreset } from './stremthruTorz.js';
+import { DebridioPreset } from './debridioScraper.js';
+import { AIOStreamsPreset } from './aiostreams.js';
+import { OpenSubtitlesPreset } from './opensubtitles.js';
+import { PeerflixPreset } from './peerflix.js';
+import { DMMCastPreset } from './dmmCast.js';
+import { MarvelPreset } from './marvel.js';
 import { JackettioPreset } from './jackettio.js';
+import { OrionPreset } from './orion.js';
+import { StreamFusionPreset } from './streamfusion.js';
+import { AnimeKitsuPreset } from './animeKitsu.js';
+import { NuvioStreamsPreset } from './nuviostreams.js';
+import { RpdbCatalogsPreset } from './rpdbCatalogs.js';
+import { TmdbCollectionsPreset } from './tmdbCollections.js';
+import { DebridioWatchtowerPreset } from './debridioWatchtower.js';
+import { DebridioTmdbPreset } from './debridioTmdb.js';
+import { StarWarsUniversePreset } from './starWarsUniverse.js';
+import { DebridioTvdbPreset } from './debridioTvdb.js';
+import { DcUniversePreset } from './dcUniverse.js';
+import { DebridioTvPreset } from './debridioTv.js';
+import { DebridioIC4APreset } from './debridioIc4a.js';
+import { TorrentCatalogsPreset } from './torrentCatalogs.js';
+import { StreamingCatalogsPreset } from './streamingCatalogs.js';
+import { AnimeCatalogsPreset } from './animeCatalogs.js';
+import { DoctorWhoUniversePreset } from './doctorWhoUniverse.js';
+import { WebStreamrPreset } from './webstreamr.js';
+import { TMDBAddonPreset } from './tmdb.js';
+import { TorrentsDbPreset } from './torrentsDb.js';
+import { USATVPreset } from './usaTv.js';
+import { ArgentinaTVPreset } from './argentinaTv.js';
+import { OpenSubtitlesV3PlusPreset } from './opensubtitles-v3-plus.js';
+import { SubSourcePreset } from './subsource.js';
+import { SubDLPreset } from './subdl.js';
+import { AISearchPreset } from './aiSearch.js';
+import { FKStreamPreset } from './fkstream.js';
+import { AIOSubtitlePreset } from './aiosubtitle.js';
+import { SubHeroPreset } from './subhero.js';
+import { StreamAsiaPreset } from './streamasia.js';
+import { MoreLikeThisPreset } from './moreLikeThis.js';
+import { GDriveAPI } from '../builtins/gdrive/index.js';
+import { GDrivePreset } from './gdrive.js';
+import { ContentDeepDivePreset } from './contentDeepDive.js';
+import { AICompanionPreset } from './aiCompanion.js';
+import { GoogleOAuth } from '../builtins/gdrive/api.js';
+import { TorBoxSearchPreset } from './torboxSearch.js';
+import { TorznabPreset } from './torznab.js';
+import { AStreamPreset } from './aStream.js';
+import { Env } from '../utils/env.js';
+import { ZileanPreset } from './zilean.js';
+import { AnimeToshoPreset } from './animetosho.js';
+import { NewznabPreset } from './newznab.js';
+import { ProwlarrPreset } from './prowlarr.js';
+import { JackettPreset } from './jackett.js';
+import { NZBHydraPreset } from './nzbhydra.js';
 import { KnabenPreset } from './knaben.js';
 import { LibraryPreset } from './library.js';
-import { MarvelPreset } from './marvel.js';
-import { MediaFusionPreset } from './mediafusion.js';
-import { MeteorPreset } from './meteor.js';
-import { MoreLikeThisPreset } from './moreLikeThis.js';
-import { NekoBtPreset } from './nekoBt.js';
-import { NewznabPreset } from './newznab.js';
-import { NuvioStreamsPreset } from './nuviostreams.js';
-import { NZBHydraPreset } from './nzbhydra.js';
-import { OpenSubtitlesV3PlusPreset } from './opensubtitles-v3-plus.js';
-import { OpenSubtitlesPreset } from './opensubtitles.js';
-import { OrionPreset } from './orion.js';
-import { PeerflixPreset } from './peerflix.js';
-import { ProwlarrPreset } from './prowlarr.js';
-import { RpdbCatalogsPreset } from './rpdbCatalogs.js';
-import { SeaDexPreset } from './seadex.js';
+import { EztvPreset } from './eztv.js';
+import { BitmagnetPreset } from './bitmagnet.js';
+import { BrazucaTorrentsPreset } from './brazucaTorrents.js';
 import { SootioPreset } from './sootio.js';
-import { StarWarsUniversePreset } from './starWarsUniverse.js';
-import { StreamAsiaPreset } from './streamasia.js';
-import { StreamFusionPreset } from './streamfusion.js';
-import { StreamingCatalogsPreset } from './streamingCatalogs.js';
-import { StremthruStorePreset } from './stremthruStore.js';
-import { StremthruTorzPreset } from './stremthruTorz.js';
-import { SubDLPreset } from './subdl.js';
-import { SubHeroPreset } from './subhero.js';
-import { SubSourcePreset } from './subsource.js';
-import { TMDBAddonPreset } from './tmdb.js';
-import { TmdbCollectionsPreset } from './tmdbCollections.js';
-import { TorboxAddonPreset } from './torbox.js';
-import { TorBoxSearchPreset } from './torboxSearch.js';
-import { TorrentCatalogsPreset } from './torrentCatalogs.js';
 import { TorrentGalaxyPreset } from './torrentGalaxy.js';
-import { TorrentioPreset } from './torrentio.js';
-import { TorrentsDbPreset } from './torrentsDb.js';
-import { TorznabPreset } from './torznab.js';
-import { USATVPreset } from './usaTv.js';
 import { UsenetStreamerPreset } from './usenetStreamer.js';
-import { WebStreamrPreset } from './webstreamr.js';
-import { ZileanPreset } from './zilean.js';
+import { NekoBtPreset } from './nekoBt.js';
+import { EasynewsSearchPreset } from './easynewsSearch.js';
+import { SeaDexPreset } from './seadex.js';
+import { StreamNZBPreset } from './streamnzb.js';
+import { Preset } from './index.js';
 
 let PRESET_LIST: string[] = [
   'custom',
@@ -112,6 +116,7 @@ let PRESET_LIST: string[] = [
   'easynewsPlusPlus',
   'easynews-search',
   'usenet-streamer',
+  'streamnzb',
   'dmm-cast',
   'nuvio-streams',
   'webstreamr',
@@ -156,7 +161,6 @@ export class PresetManager {
         NAME: metadata.NAME,
         LOGO: metadata.LOGO,
         DESCRIPTION: metadata.DESCRIPTION,
-        URL: metadata.URL,
         SUPPORTED_RESOURCES: metadata.SUPPORTED_RESOURCES,
         SUPPORTED_STREAM_TYPES: metadata.SUPPORTED_STREAM_TYPES,
         SUPPORTED_SERVICES: metadata.SUPPORTED_SERVICES,
@@ -314,6 +318,8 @@ export class PresetManager {
         return UsenetStreamerPreset;
       case 'easynews-search':
         return EasynewsSearchPreset;
+      case 'streamnzb':
+        return StreamNZBPreset;
       default:
         throw new Error(`Preset ${id} not found`);
     }

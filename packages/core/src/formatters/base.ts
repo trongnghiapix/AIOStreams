@@ -64,6 +64,8 @@ export interface ParseValue {
     library: boolean;
     quality: string | null;
     resolution: string | null;
+    subbed: boolean;
+    dubbed: boolean;
     languages: string[] | null;
     uLanguages: string[] | null;
     subtitleLanguages: string[] | null;
@@ -92,7 +94,9 @@ export interface ParseValue {
     encode: string | null;
     audioChannels: string[] | null;
     edition: string | null;
-    remastered: boolean;
+    editions: string[] | null;
+    remastered: null;
+    regraded: boolean;
     repack: boolean;
     uncensored: boolean;
     unrated: boolean;
@@ -103,6 +107,7 @@ export interface ParseValue {
     indexer: string | null;
     year: string | null;
     title: string | null;
+    date: string | null;
     folderSeasons: number[] | null;
     formattedFolderSeasons: string | null;
     seasons: number[] | null;
@@ -354,6 +359,8 @@ export abstract class BaseFormatter {
         library: stream.library ?? false,
         quality: stream.parsedFile?.quality || null,
         resolution: stream.parsedFile?.resolution || null,
+        subbed: stream.parsedFile?.subbed || false,
+        dubbed: stream.parsedFile?.dubbed || false,
         languages: sortedLanguages || null,
         uLanguages: onlyUserSpecifiedLanguages || null,
         subtitleLanguages: sortedSubtitleLanguages || null,
@@ -467,6 +474,7 @@ export abstract class BaseFormatter {
         year: stream.parsedFile?.year || null,
         type: stream.type || null,
         title: stream.parsedFile?.title || null,
+        date: stream.parsedFile?.date || null,
         season: stream.parsedFile?.seasons?.[0] || null,
         formattedSeasons: formattedSeasonString || null,
         seasons: stream.parsedFile?.seasons || null,
@@ -486,8 +494,10 @@ export abstract class BaseFormatter {
         ageHours: stream.age || null,
         message: stream.message || null,
         proxied: stream.proxied ?? false,
-        edition: stream.parsedFile?.edition || null,
-        remastered: stream.parsedFile?.remastered ?? false,
+        edition: stream.parsedFile?.editions?.[0] || null,
+        editions: stream.parsedFile?.editions || null,
+        regraded: stream.parsedFile?.regraded ?? false,
+        remastered: null,
         repack: stream.parsedFile?.repack ?? false,
         uncensored: stream.parsedFile?.uncensored ?? false,
         unrated: stream.parsedFile?.unrated ?? false,
@@ -948,13 +958,24 @@ export abstract class BaseFormatter {
             return variable.replaceAll(key, replaceKey);
         }
         case mod.startsWith('remove(') && mod.endsWith(')'): {
-          const findStartChar = mod.charAt(7); // either " or '
-          const findEndChar = mod.charAt(mod.length - 2); // either " or '
+          const content = _mod.substring(7, _mod.length - 1);
 
-          // Extract the content from remove(['"]...['"])
-          const content = _mod.substring(8, _mod.length - 2);
+          // Extract options from remove("...", "...", ...)
+          const regex = /"([^"]*)"|'([^']*)'/g;
+          const args: string[] = [];
 
-          if (content) return variable.replaceAll(content, '');
+          let match;
+          while ((match = regex.exec(content)) !== null) {
+            args.push(match[1] ?? match[2] ?? '');
+          }
+
+          if (args.length === 0) return undefined;
+
+          let result = variable;
+          for (const arg of args) {
+            if (arg) result = result.replaceAll(arg, '');
+          }
+          return result;
         }
         case mod.startsWith('truncate(') && mod.endsWith(')'): {
           // Extract N from truncate(N)
@@ -1002,13 +1023,20 @@ export abstract class BaseFormatter {
           return variable.join(separator);
         }
         case mod.startsWith('remove(') && mod.endsWith(')'): {
-          const findStartChar = mod.charAt(7); // either " or '
-          const findEndChar = mod.charAt(mod.length - 2); // either " or '
+          const content = _mod.substring(7, _mod.length - 1);
 
-          // Extract the content from remove(['"]...['"])
-          const content = _mod.substring(8, _mod.length - 2);
+          // Extract options from remove("...", "...", ...)
+          const regex = /"([^"]*)"|'([^']*)'/g;
+          const args: string[] = [];
 
-          if (content) return variable.filter((v) => v !== content);
+          let match;
+          while ((match = regex.exec(content)) !== null) {
+            args.push(match[1] ?? match[2] ?? '');
+          }
+
+          if (args.length === 0) return undefined;
+
+          return variable.filter((v) => !args.includes(v));
         }
       }
     }
@@ -1257,12 +1285,11 @@ class ModifierConstants {
   };
 
   static hardcodedModifiersForRegexMatching = {
+    'remove(.*?)': null,
     "replace('.*?'\\s*?,\\s*?'.*?')": null,
     'replace(".*?"\\s*?,\\s*?\'.*?\')': null,
     'replace(\'.*?\'\\s*?,\\s*?".*?")': null,
     'replace(".*?"\\s*?,\\s*?\".*?\")': null,
-    "remove('.*?')": null,
-    'remove(".*?")': null,
     "join('.*?')": null,
     'join(".*?")': null,
     'truncate(\\d+)': null,

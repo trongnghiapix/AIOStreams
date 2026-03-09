@@ -19,6 +19,7 @@ import { randomBytes } from 'crypto';
 import fs from 'fs';
 import bytes from 'bytes';
 import UserAgent from 'user-agents';
+import { parseTime, Time } from './time.js';
 
 // Get __dirname equivalent in ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -65,6 +66,19 @@ const commaSeparated = makeExactValidator<string[]>((x) => {
   }
   return parsed;
 });
+
+const time = (unit: 's' | 'ms' = 'ms') =>
+  makeValidator<number>((input: string) => {
+    if (/^\-?\d+$/.test(input.trim())) {
+      const value = Number(input.trim());
+      return value;
+    }
+    const ms = parseTime(input);
+    if (ms === null) {
+      throw new EnvError(`Invalid time input: "${input}"`);
+    }
+    return unit === 's' ? Math.floor(ms / 1000) : ms;
+  });
 
 // comma separated list of key:url where key is in choices
 const httpProxyMap = <T extends string>(choices: readonly T[]) =>
@@ -325,6 +339,47 @@ const boolOrList = makeValidator((x) => {
   return x.split(',').map((x) => x.trim());
 });
 
+/**
+ * Parses a comma-separated title-language map string.
+ * Format: `*:default,original,germanindexer.com:de,default`
+ *
+ * Each group starts with `domain:firstValue`. Subsequent comma-separated tokens
+ * without a colon are additional values for the current domain.
+ * `*` is the catch-all wildcard applied to all unmatched hostnames.
+ *
+ * Valid spec values:
+ *   - `default`  – use the primary (service-level) title
+ *   - `all`      – use all alternative titles up to BUILTIN_SCRAPE_TITLE_LIMIT
+ *   - `original` – use titles in the TMDB original language
+ *   - ISO 639-1  – use titles tagged with that language code (e.g. `de`, `fr`)
+ */
+const titleLangMap = makeValidator<Record<string, string[]> | undefined>(
+  (x) => {
+    if (typeof x !== 'string' || !x.trim()) return undefined;
+    const keySpecMap: Record<string, string[]> = {};
+    let currentKey: string | null = null;
+    for (const token of x
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean)) {
+      const colonIdx = token.indexOf(':');
+      if (colonIdx !== -1) {
+        currentKey = token.slice(0, colonIdx).trim().toLowerCase();
+        const firstSpec = token
+          .slice(colonIdx + 1)
+          .trim()
+          .toLowerCase();
+        if (currentKey) {
+          keySpecMap[currentKey] = firstSpec ? [firstSpec] : [];
+        }
+      } else if (currentKey) {
+        keySpecMap[currentKey].push(token.toLowerCase());
+      }
+    }
+    return Object.keys(keySpecMap).length ? keySpecMap : undefined;
+  }
+);
+
 const urlMappings = makeValidator<Record<string, string>>((x) => {
   // json object with string properties
   const parsed = JSON.parse(x);
@@ -415,6 +470,98 @@ const boolOrChoice = <T extends string>(choices: T[]) =>
     );
   });
 
+export const BUILTIN_DOWNLOAD_POLL_INTERVAL_DEFAULTS: Record<string, number> = {
+  nzbdav: 2 * Time.Second,
+  altmount: 2 * Time.Second,
+  stremthru_newz: 2 * Time.Second,
+  '*': 10 * Time.Second,
+};
+
+export const BUILTIN_DOWNLOAD_MAX_WAIT_TIME_DEFAULTS: Record<string, number> = {
+  nzbdav: 90 * Time.Second,
+  altmount: 90 * Time.Second,
+  stremthru_newz: 90 * Time.Second,
+  '*': 120 * Time.Second,
+};
+
+const serviceTimeMap = (defaults: Record<string, number>) =>
+  makeExactValidator<Record<string, number>>(
+    (x: string): Record<string, number> => {
+      if (typeof x !== 'string' || !x.trim()) {
+        throw new EnvError('Service time map must be a non-empty string');
+      }
+
+      const map: Record<string, number> = {};
+      let hasUserWildcard = false;
+
+      const entries = x
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+      for (const entry of entries) {
+        const colonIdx = entry.indexOf(':');
+        if (colonIdx === -1) {
+          throw new EnvError(
+            `Invalid service time map entry: "${entry}". Expected format: serviceId:<time> (e.g., torbox:10s, *:2m)`
+          );
+        }
+        const key = entry.slice(0, colonIdx).trim();
+        const timeStr = entry.slice(colonIdx + 1).trim();
+        if (!key || !timeStr) {
+          throw new EnvError(
+            `Invalid service time map entry: "${entry}". Both key and time value are required.`
+          );
+        }
+        if (key !== '*' && !constants.SERVICES.includes(key as any)) {
+          throw new EnvError(
+            `Invalid service ID: "${key}". Must be one of: ${constants.SERVICES.join(', ')}, or * for all services.`
+          );
+        }
+        let ms: number;
+        if (/^\d+$/.test(timeStr)) {
+          ms = Number(timeStr);
+        } else {
+          try {
+            ms = parseTime(timeStr);
+          } catch {
+            throw new EnvError(
+              `Invalid time value "${timeStr}" for service "${key}". Use a human-readable format (e.g., 10s, 2m) or milliseconds.`
+            );
+          }
+        }
+        if (ms < 0 || !Number.isInteger(ms)) {
+          throw new EnvError(
+            `Time value for service "${key}" must be a non-negative integer.`
+          );
+        }
+        if (key === '*') hasUserWildcard = true;
+        map[key] = ms;
+      }
+
+      // If user specified wildcard, don't apply our per-service defaults — their wildcard covers everything
+      if (!hasUserWildcard) {
+        for (const [defaultKey, defaultValue] of Object.entries(defaults)) {
+          if (!(defaultKey in map)) {
+            map[defaultKey] = defaultValue;
+          }
+        }
+      }
+
+      return map;
+    }
+  );
+
+/**
+ * Resolves the effective time value for a given service from a serviceTimeMap.
+ * Checks for a service-specific entry first, then falls back to the wildcard `*`.
+ */
+export function resolveServiceTime(
+  map: Record<string, number>,
+  serviceId: string
+): number {
+  return map[serviceId] ?? map['*'] ?? 0;
+}
+
 export const Env = cleanEnv(process.env, {
   VERSION: readonly({
     default: metadata?.version || 'unknown',
@@ -423,6 +570,11 @@ export const Env = cleanEnv(process.env, {
   TAG: readonly({
     default: metadata?.tag || 'unknown',
     desc: 'Tag of the addon',
+  }),
+  CHANNEL: readonly({
+    default: (metadata?.channel as 'stable' | 'nightly' | 'dev') || 'stable',
+    choices: ['stable', 'nightly', 'dev'],
+    desc: 'Build channel of the addon',
   }),
   DESCRIPTION: readonly({
     default: metadata?.description || 'unknown',
@@ -502,6 +654,10 @@ export const Env = cleanEnv(process.env, {
   CUSTOM_HTML: str({
     default: undefined,
     desc: 'Custom HTML for the addon',
+  }),
+  FEATURED_TEMPLATE_IDS: commaSeparated({
+    default: [],
+    desc: 'Comma-separated list of up to 2 template IDs to feature on the about page. Defaults to the first 2 available templates when unset.',
   }),
   ALTERNATE_DESIGN: bool({
     default: false,
@@ -747,6 +903,18 @@ export const Env = cleanEnv(process.env, {
     default: 86400, // 24 hours
     desc: 'Minimum interval for precaching the next episode of the current episode in seconds. i.e. the minimum wait before attempting to precache the same next episode again.',
   }),
+  PRELOAD_MIN_INTERVAL: num({
+    default: 3600, // 1 hour
+    desc: 'Minimum interval between preload operations for the same item (type + id) per user in seconds. Set to 0 to disable the cooldown.',
+  }),
+  MAX_BACKGROUND_PINGS: num({
+    default: 2,
+    desc: 'Maximum number of streams that can be pinged in a single background operation (preload or multi-stream precache).',
+  }),
+  PRELOAD_STREAMS_CONCURRENCY: num({
+    default: 5,
+    desc: 'Concurrency limit for simultaneous stream preload requests.',
+  }),
 
   // configuration settings
 
@@ -766,6 +934,10 @@ export const Env = cleanEnv(process.env, {
   MAX_STREAM_EXPRESSIONS_TOTAL_CHARACTERS: num({
     default: 50000,
     desc: 'Max total character count across all stream expressions',
+  }),
+  MAX_NZB_FAILOVER_COUNT: num({
+    default: 5,
+    desc: 'Maximum number of NZB failover attempts a user can configure. Controls the upper bound for the nzbFailover.count setting.',
   }),
   MAX_GROUPS: num({
     default: 20,
@@ -1930,9 +2102,9 @@ export const Env = cleanEnv(process.env, {
     default: 60 * 60, // 1 hour
     desc: 'Builtin Debrid playback link cache TTL',
   }),
-  BUILTIN_DEBRID_RESOLVE_ERROR_CACHE_TTL: num({
-    default: 60 * 10, // 10 minutes
-    desc: 'Builtin Debrid resolve error cache TTL',
+  BUILTIN_DEBRID_ERROR_CACHE_TTL: time('s')({
+    default: 1 * 60 * 60, // 1 hour
+    desc: 'How long globally confirmed content-level failures (e.g. NZB or torrent download status = failed/invalid) are cached to prevent redundant retries across all users.',
   }),
   BUILTIN_DEBRID_LIBRARY_CACHE_TTL: num({
     default: 60 * 60 * 24 * 7, // 7 days
@@ -1967,9 +2139,27 @@ export const Env = cleanEnv(process.env, {
     default: 1 * 24 * 60 * 60, // 1 day
     desc: 'Builtin Debrid playback link validity',
   }),
+  BUILTIN_DOWNLOAD_POLL_INTERVAL: serviceTimeMap(
+    BUILTIN_DOWNLOAD_POLL_INTERVAL_DEFAULTS
+  )({
+    default: { ...BUILTIN_DOWNLOAD_POLL_INTERVAL_DEFAULTS },
+    desc: 'Comma-separated serviceId:<time> map for download poll intervals. Supports wildcard (*). Example: torbox:15s,nzbdav:3s,*:10s. If * is specified, per-service defaults are not applied.',
+  }),
+  BUILTIN_DOWNLOAD_MAX_WAIT_TIME: serviceTimeMap(
+    BUILTIN_DOWNLOAD_MAX_WAIT_TIME_DEFAULTS
+  )({
+    default: { ...BUILTIN_DOWNLOAD_MAX_WAIT_TIME_DEFAULTS },
+    desc: 'Comma-separated serviceId:<time> map for maximum wait times before timeout. Supports wildcard (*). Example: torbox:3m,nzbdav:90s,*:2m. If * is specified, per-service defaults are not applied.',
+  }),
   BUILTIN_SCRAPE_WITH_ALL_TITLES: boolOrList({
     default: false,
     desc: 'Whether to use alternative titles during scraping for built-in addons. Set to true, false, or a comma separated list of hostnames',
+  }),
+  BUILTIN_SCRAPE_TITLE_LANGUAGES: titleLangMap<
+    Record<string, string[]> | undefined
+  >({
+    default: undefined,
+    desc: 'Fine-grained control over which titles are used when scraping built-in addons. Comma-separated list of domain:spec entries, where domain is a hostname or * for the default, and spec is one of: default (primary title), all (all titles up to limit), original (TMDB original-language titles), or an ISO 639-1 code (e.g. de, fr). Takes precedence over BUILTIN_SCRAPE_WITH_ALL_TITLES. Example: *:default,original,germanindexer.com:de,default',
   }),
   BUILTIN_SCRAPE_TITLE_LIMIT: num({
     default: 3,
@@ -2179,6 +2369,10 @@ export const Env = cleanEnv(process.env, {
   BUILTIN_KNABEN_SEARCH_TIMEOUT: num({
     default: 30000, // 30 seconds
     desc: 'Builtin Knaben Search timeout',
+  }),
+  BUILTIN_KNABEN_DOWNLOAD_TORRENTS: bool({
+    default: true,
+    desc: 'Whether to attempt downloading torrents for results from Knaben without an infohash. Set to false to skip results that require downloading the .torrent file',
   }),
   BUILTIN_KNABEN_SEARCH_CACHE_TTL: num({
     default: 7 * 24 * 60 * 60, // 7 days

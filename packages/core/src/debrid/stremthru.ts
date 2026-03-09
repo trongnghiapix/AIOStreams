@@ -8,7 +8,12 @@ import {
   DistributedLock,
   getTimeTakenSincePoint,
 } from '../utils/index.js';
-import { selectFileInTorrentOrNZB, Torrent } from './utils.js';
+import {
+  selectFileInTorrentOrNZB,
+  Torrent,
+  hashNzbUrl,
+  buildResolveKey,
+} from './utils.js';
 import {
   DebridServiceConfig,
   DebridDownload,
@@ -16,6 +21,7 @@ import {
   DebridError,
   TorrentDebridService,
   UsenetDebridService,
+  DebridFailureCache,
 } from './base.js';
 import { parseTorrentTitle, ParsedResult } from '@viren070/parse-torrent-title';
 import assert from 'assert';
@@ -321,7 +327,9 @@ export class StremThruService
           id: -1,
           hash: item.hash,
           status: item.status,
-          size: item.files.reduce((acc, file) => acc + file.size, 0),
+          size: Math.round(
+            item.files.reduce((acc, file) => acc + file.size, 0)
+          ),
           files: item.files.map((file) => ({
             name: file.name,
             size: file.size,
@@ -794,7 +802,18 @@ export class StremThruService
         : autoRemoveDownloads;
 
       const { result } = await DistributedLock.getInstance().withLock(
-        `st:resolve:usenet:${this.serviceName}:${playbackInfo.hash}:${playbackInfo.metadata?.season}:${playbackInfo.metadata?.episode}:${playbackInfo.metadata?.absoluteEpisode}:${filename}:${effectiveCacheAndPlay}:${effectiveAutoRemove}:${this.config.clientIp}:${this.config.stremthru.token}`,
+        buildResolveKey(
+          'st:lock',
+          this.serviceName,
+          playbackInfo,
+          filename,
+          this.config.stremthru.token,
+          this.config.clientIp,
+          {
+            cacheAndPlay: effectiveCacheAndPlay,
+            autoRemoveDownloads: effectiveAutoRemove,
+          }
+        ),
         () =>
           this._resolveUsenet(
             playbackInfo,
@@ -804,13 +823,14 @@ export class StremThruService
           ),
         {
           timeout: effectiveCacheAndPlay
-            ? (this.config.cacheAndPlayOptions?.maxWaitTime ?? 120000)
+            ? this.cacheAndPlayOptions.maxWaitTime +
+              this.cacheAndPlayOptions.pollingInterval
             : 30000,
           ttl: effectiveCacheAndPlay
-            ? (this.config.cacheAndPlayOptions?.maxWaitTime ?? 120000) + 10000
+            ? this.cacheAndPlayOptions.maxWaitTime +
+              this.cacheAndPlayOptions.pollingInterval +
+              10000
             : 40000,
-          // timeout: effectiveCacheAndPlay ? 120000 : 30000,
-          // ttl: effectiveCacheAndPlay ? 130000 : 40000,
         }
       );
       return result;
@@ -818,7 +838,15 @@ export class StremThruService
 
     // Torrent resolve
     const { result } = await DistributedLock.getInstance().withLock(
-      `st:resolve:torrent:${this.serviceName}:${playbackInfo.hash}:${playbackInfo.metadata?.season}:${playbackInfo.metadata?.episode}:${playbackInfo.metadata?.absoluteEpisode}:${filename}:${cacheAndPlay}:${autoRemoveDownloads}:${this.config.clientIp}:${this.config.stremthru.token}`,
+      buildResolveKey(
+        'st:lock',
+        this.serviceName,
+        playbackInfo,
+        filename,
+        this.config.stremthru.token,
+        this.config.clientIp,
+        { cacheAndPlay, autoRemoveDownloads }
+      ),
       () =>
         this._resolveTorrent(
           playbackInfo,
@@ -827,8 +855,15 @@ export class StremThruService
           autoRemoveDownloads
         ),
       {
-        timeout: playbackInfo.cacheAndPlay ? 120000 : 30000,
-        ttl: 10000,
+        timeout: cacheAndPlay
+          ? this.cacheAndPlayOptions.maxWaitTime +
+            this.cacheAndPlayOptions.pollingInterval
+          : 30000,
+        ttl: cacheAndPlay
+          ? this.cacheAndPlayOptions.maxWaitTime +
+            this.cacheAndPlayOptions.pollingInterval +
+            10000
+          : 40000,
       }
     );
     return result;
@@ -841,7 +876,14 @@ export class StremThruService
     autoRemoveDownloads?: boolean
   ): Promise<string | undefined> {
     const { hash, metadata } = playbackInfo;
-    const cacheKey = `torrent:${this.serviceName}:${this.config.stremthru.token}:${this.config.clientIp}:${hash}:${metadata?.season}:${metadata?.episode}:${metadata?.absoluteEpisode}`;
+    const cacheKey = buildResolveKey(
+      'st:cache',
+      this.serviceName,
+      playbackInfo,
+      filename,
+      this.config.stremthru.token,
+      this.config.clientIp
+    );
     const cachedLink = await StremThruService.playbackLinkCache.get(cacheKey);
 
     if (cachedLink !== undefined) {
@@ -854,6 +896,9 @@ export class StremThruService
         return cachedLink;
       }
     }
+
+    // Check global failure cache before making any service calls
+    await DebridFailureCache.check(this.serviceName, 'torrent', hash);
 
     let magnetDownload: DebridDownload;
     if (playbackInfo.serviceItemId) {
@@ -923,7 +968,7 @@ export class StremThruService
             break;
           }
           if (['failed', 'invalid'].includes(magnetDownloadInList.status)) {
-            throw new DebridError(
+            const err = new DebridError(
               `Magnet download ${magnetDownloadInList.status}`,
               {
                 statusCode: 400,
@@ -933,11 +978,24 @@ export class StremThruService
                 body: magnetDownloadInList,
               }
             );
+            DebridFailureCache.mark(
+              this.serviceName,
+              'torrent',
+              hash,
+              err
+            ).catch(() => {});
+            throw err;
           }
         }
       }
       if (magnetDownload.status !== 'downloaded') {
-        return undefined;
+        throw new DebridError(`Timed out waiting for magnet to download`, {
+          statusCode: 408,
+          statusText: `Timed out waiting for magnet to download`,
+          code: 'UNKNOWN',
+          headers: {},
+          body: magnetDownload,
+        });
       }
     }
 
@@ -1059,7 +1117,14 @@ export class StremThruService
     autoRemoveDownloads?: boolean
   ): Promise<string | undefined> {
     const { nzb, metadata, hash } = playbackInfo;
-    const cacheKey = `usenet:${this.serviceName}:${this.config.stremthru.token}:${this.config.clientIp}:${JSON.stringify(playbackInfo)}`;
+    const cacheKey = buildResolveKey(
+      'st:cache',
+      this.serviceName,
+      playbackInfo,
+      filename,
+      this.config.stremthru.token,
+      this.config.clientIp
+    );
     const cachedLink = await StremThruService.playbackLinkCache.get(cacheKey);
 
     if (cachedLink !== undefined) {
@@ -1071,6 +1136,15 @@ export class StremThruService
       } else {
         return cachedLink;
       }
+    }
+
+    // Check global failure cache before making any service calls
+    if (nzb) {
+      await DebridFailureCache.check(
+        this.serviceName,
+        'usenet',
+        hashNzbUrl(nzb, false)
+      );
     }
 
     let usenetDownload: DebridDownload;
@@ -1141,17 +1215,37 @@ export class StremThruService
           break;
         }
         if (['failed', 'invalid'].includes(polledDownload.status)) {
-          throw new DebridError(`Usenet download ${polledDownload.status}`, {
-            statusCode: 400,
-            statusText: `Usenet download ${polledDownload.status}`,
-            code: 'UNKNOWN',
-            headers: {},
-            body: polledDownload,
-          });
+          const err = new DebridError(
+            `Usenet download ${polledDownload.status}`,
+            {
+              statusCode: 400,
+              statusText: `Usenet download ${polledDownload.status}`,
+              code: 'UNKNOWN',
+              headers: {},
+              body: polledDownload,
+            }
+          );
+          if (nzb)
+            DebridFailureCache.mark(
+              this.serviceName,
+              'usenet',
+              hashNzbUrl(nzb, false),
+              err
+            ).catch(() => {});
+          throw err;
         }
       }
       if (usenetDownload.status !== 'downloaded') {
-        return undefined;
+        throw new DebridError(
+          `Timed out waiting for usenet download to complete`,
+          {
+            statusCode: 408,
+            statusText: `Timed out waiting for usenet download to complete`,
+            code: 'UNKNOWN',
+            headers: {},
+            body: usenetDownload,
+          }
+        );
       }
     }
 

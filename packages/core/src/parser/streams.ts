@@ -76,7 +76,7 @@ class StreamParser {
       type: 'http',
       proxied: this.isProxied(stream),
       url: this.applyUrlModifications(stream.url ?? undefined),
-      nzbUrl: stream.nzbUrl ?? undefined,
+      nzbUrl: stream.nzbUrl || undefined,
       tarUrls: stream.tarUrls ?? undefined,
       tgzUrls: stream.tgzUrls ?? undefined,
       '7zipUrls': stream['7zipUrls'] ?? undefined,
@@ -165,7 +165,16 @@ class StreamParser {
       freeleech: this.isFreeleech(stream, parsedStream),
     };
 
+    parsedStream.extra = this.getExtras(stream, parsedStream);
+
     return parsedStream;
+  }
+
+  protected getExtras(
+    _stream: Stream,
+    _currentParsedStream: ParsedStream
+  ): ParsedStream['extra'] {
+    return undefined;
   }
 
   protected getRandomId(): string {
@@ -434,7 +443,9 @@ class StreamParser {
     currentParsedStream: ParsedStream
   ): string | undefined {
     return stream.url
-      ? stream.url.match(/(?<=[-/[(;:&])[a-fA-F0-9]{40}(?=[-\]\)/:;&])/)?.[0]
+      ? decodeURIComponent(stream.url).match(
+          /(?:(?<=btih:)|(?<=[-/[(;:&]))[a-fA-F0-9]{40}(?=$|[-\]\)/:;&?])/
+        )?.[0]
       : undefined;
   }
 

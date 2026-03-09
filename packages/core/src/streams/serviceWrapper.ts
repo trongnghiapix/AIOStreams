@@ -12,6 +12,7 @@ import {
   BuiltinDebridServices,
   generatePlaybackUrl,
   metadataStore,
+  fileInfoStore,
   TitleMetadata,
   FileInfo,
 } from '../debrid/index.js';
@@ -26,6 +27,24 @@ export interface ServiceWrapResult {
   streams: ParsedStream[];
   errors: ServiceWrapError[];
   hasNewStreams: boolean;
+  serviceTimings?: Record<string, ServiceWrapServiceTiming>;
+}
+
+export interface ServiceWrapServiceTiming {
+  /** Time (ms) spent waiting for the debrid checkMagnets API response. */
+  magnetCheckMs: number;
+  /** Time (ms) spent on post-magnet-check processing (title validation, file selection, stream building). */
+  processingMs: number;
+  /** Total wall-clock time for this service (magnetCheckMs + processingMs). */
+  totalMs: number;
+  /** Number of cached results returned. */
+  cachedCount: number;
+  /** Number of uncached results returned. */
+  uncachedCount: number;
+  /** Number of torrents submitted to this service. */
+  torrentsIn: number;
+  /** Whether an error occurred during processing. */
+  hasError?: boolean;
 }
 
 export interface ServiceWrapError {
@@ -103,7 +122,7 @@ export async function resolveServiceWrappedStreams(
       wrappedP2PStreams.push(stream);
     } else if (
       reconfigureEnabled &&
-      presetMeta?.BUILTIN == false &&
+      !presetMeta?.BUILTIN &&
       !isWrapped &&
       stream.type === 'debrid' &&
       stream.torrent?.infoHash &&
@@ -186,8 +205,15 @@ export async function resolveServiceWrappedStreams(
     });
   }
 
+  const serviceTimings = processedTorrents.serviceTimings;
+
   if (processedTorrents.results.length === 0) {
-    return { streams: otherStreams, errors, hasNewStreams: false };
+    return {
+      streams: otherStreams,
+      errors,
+      hasNewStreams: false,
+      serviceTimings,
+    };
   }
 
   // Build encrypted store auths for each service
@@ -198,7 +224,8 @@ export async function resolveServiceWrappedStreams(
   await metadataStore().set(
     metadataId,
     metadataToStore,
-    Env.BUILTIN_PLAYBACK_LINK_VALIDITY
+    Env.BUILTIN_PLAYBACK_LINK_VALIDITY,
+    true
   );
 
   // Map original ParsedStreams by infoHash for result attribution
@@ -212,13 +239,14 @@ export async function resolveServiceWrappedStreams(
     }
   }
 
-  const debridStreams = buildDebridStreams(
+  const debridStreams = await buildDebridStreams(
     processedTorrents.results,
     p2pByHash,
     encryptedStoreAuths,
     metadataId,
     userData,
-    addons
+    addons,
+    metadata
   );
 
   logger.info(
@@ -229,6 +257,7 @@ export async function resolveServiceWrappedStreams(
     streams: [...debridStreams, ...otherStreams],
     errors,
     hasNewStreams: debridStreams.length > 0,
+    serviceTimings,
   };
 }
 
@@ -286,6 +315,7 @@ function buildAndDeduplicateTorrents(streams: ParsedStream[]): Torrent[] {
       age: s.age,
       private: s.torrent?.private,
       group: s.parsedFile?.releaseGroup,
+      confirmed: true,
       duration: s.duration,
     }));
 
@@ -340,14 +370,15 @@ function buildEncryptedStoreAuths(
   );
 }
 
-function buildDebridStreams(
+async function buildDebridStreams(
   results: Awaited<ReturnType<typeof processTorrents>>['results'],
   p2pByHash: Map<string, ParsedStream[]>,
   encryptedStoreAuths: Record<BuiltinServiceId, string | string[]>,
   metadataId: string,
   userData: UserData,
-  addons: Addon[]
-): ParsedStream[] {
+  addons: Addon[],
+  metadata: TitleMetadata | undefined
+): Promise<ParsedStream[]> {
   const debridStreams: ParsedStream[] = [];
 
   const normaliseText = (text: string) => {
@@ -367,39 +398,6 @@ function buildDebridStreams(
       ? encryptedStoreAuths[result.service.id]
       : undefined;
 
-    // Build file info for playback URL
-    const fileInfo: FileInfo | undefined = result.service
-      ? {
-          type: 'torrent',
-          downloadUrl: result.downloadUrl,
-          title: result.title,
-          hash: result.hash,
-          private: result.private,
-          sources: result.sources,
-          index: result.file.index,
-          cacheAndPlay:
-            userData.cacheAndPlay?.enabled &&
-            userData.cacheAndPlay?.streamTypes?.includes('torrent'),
-          autoRemoveDownloads: userData.autoRemoveDownloads,
-        }
-      : undefined;
-
-    // Generate playback URL
-    let url: string | undefined;
-    if (
-      result.service &&
-      result.service.id !== 'stremio_nntp' &&
-      encryptedStoreAuth &&
-      fileInfo
-    ) {
-      url = generatePlaybackUrl(
-        encryptedStoreAuth as string,
-        metadataId,
-        fileInfo,
-        result.file.name ?? result.title
-      );
-    }
-
     // Find ALL original ParsedStreams this result came from (by infoHash).
     const originals = p2pByHash.get(result.hash) ?? [];
     const isPrivate = result.private;
@@ -408,6 +406,43 @@ function buildDebridStreams(
     const streamsToProcess = originals.length > 0 ? originals : [undefined];
 
     for (const original of streamsToProcess) {
+      const fileInfo: FileInfo | undefined = result.service
+        ? {
+            type: 'torrent',
+            downloadUrl: result.downloadUrl,
+            title: result.title,
+            hash: result.hash,
+            private: result.private,
+            sources: result.sources,
+            index: result.file.index,
+            fileIndex:
+              original?.torrent?.fileIdx !== undefined &&
+              !metadata?.season &&
+              !metadata?.episode
+                ? original.torrent.fileIdx
+                : undefined,
+            cacheAndPlay:
+              userData.cacheAndPlay?.enabled &&
+              userData.cacheAndPlay?.streamTypes?.includes('torrent'),
+            autoRemoveDownloads: userData.autoRemoveDownloads,
+          }
+        : undefined;
+
+      // Generate playback URL
+      let url: string | undefined;
+      if (
+        result.service &&
+        result.service.id !== 'stremio_nntp' &&
+        encryptedStoreAuth &&
+        fileInfo
+      ) {
+        url = generatePlaybackUrl(
+          encryptedStoreAuth as string,
+          metadataId,
+          fileInfo,
+          result.file.name ?? result.title
+        );
+      }
       const debridStream: ParsedStream = {
         ...(original ?? {
           id: `wrap-${result.hash}-${result.service?.id}`,
@@ -527,6 +562,8 @@ function buildDebridStreams(
       debridStreams.push(debridStream);
     }
   }
+
+  await fileInfoStore()?.flush();
 
   return debridStreams;
 }

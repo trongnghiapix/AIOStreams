@@ -26,6 +26,7 @@ import {
   constants,
   SelAccess,
   createPosterService,
+  APIError,
 } from './index.js';
 import { z, ZodError } from 'zod';
 import {
@@ -292,9 +293,7 @@ export async function validateConfig(
     Env.ADDON_PASSWORD.length > 0 &&
     !Env.ADDON_PASSWORD.includes(config.addonPassword || '')
   ) {
-    throw new Error(
-      'Invalid addon password. Please enter the value of the ADDON_PASSWORD environment variable '
-    );
+    throw new APIError(constants.ErrorCode.ADDON_PASSWORD_INVALID);
   }
 
   validateSyncedRegexUrls(config, options?.skipErrorsFromAddonsOrProxies);
@@ -391,6 +390,20 @@ export async function validateConfig(
           `Merged catalog "${mergedCatalog.name}" has ${mergedCatalog.catalogIds.length} source catalogs, but the maximum is ${Env.MAX_MERGED_CATALOG_SOURCES}`
         );
       }
+    }
+  }
+
+  // validate NZB failover count against the server limit
+  if (
+    config.nzbFailover?.count &&
+    config.nzbFailover.count > Env.MAX_NZB_FAILOVER_COUNT
+  ) {
+    if (options?.skipErrorsFromAddonsOrProxies) {
+      config.nzbFailover.count = Env.MAX_NZB_FAILOVER_COUNT;
+    } else {
+      throw new Error(
+        `NZB failover count is ${config.nzbFailover.count}, but the maximum allowed is ${Env.MAX_NZB_FAILOVER_COUNT}`
+      );
     }
   }
 
@@ -650,7 +663,7 @@ export function applyMigrations(config: any): UserData {
     config.statistics = {
       enabled: config.showStatistics ?? false,
       position: config.statisticsPosition ?? 'bottom',
-      statsToShow: ['addon', 'filter'],
+      statsToShow: ['addon', 'filter', 'timing'],
       ...(config.statistics ?? {}),
     };
     delete config.showStatistics;

@@ -6,6 +6,7 @@ import {
 import { z } from 'zod';
 import {
   createLogger,
+  Env,
   getTimeTakenSincePoint,
   ParsedId,
 } from '../../utils/index.js';
@@ -16,7 +17,7 @@ import {
   extractTrackersFromMagnet,
   validateInfoHash,
 } from '../utils/debrid.js';
-import { createQueryLimit, useAllTitles } from '../utils/general.js';
+import { createQueryLimit, getTitleLanguagesForUrl } from '../utils/general.js';
 
 const logger = createLogger('knaben');
 
@@ -57,7 +58,7 @@ export class KnabenAddon extends BaseDebridAddon<KnabenAddonConfig> {
     }
 
     const queries = this.buildQueries(parsedId, metadata, {
-      useAllTitles: useAllTitles(knabenApiUrl),
+      titleLanguages: getTitleLanguagesForUrl(knabenApiUrl, this.id),
     });
 
     if (queries.length === 0) {
@@ -114,6 +115,9 @@ export class KnabenAddon extends BaseDebridAddon<KnabenAddonConfig> {
         logger.warn(
           `Knaben search hit has no hash or download url: ${JSON.stringify(hit)}`
         );
+        continue;
+      }
+      if (!hash && hit.link && !Env.BUILTIN_KNABEN_DOWNLOAD_TORRENTS) {
         continue;
       }
       if (seenTorrents.has(hash ?? hit.link ?? '')) {

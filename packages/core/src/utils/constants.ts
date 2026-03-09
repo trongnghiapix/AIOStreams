@@ -7,6 +7,7 @@ export enum ErrorCode {
   USER_INVALID_CONFIG = 'USER_INVALID_CONFIG',
   USER_NEW_PASSWORD_TOO_SHORT = 'USER_NEW_PASSWORD_TOO_SHORT',
   USER_NEW_PASSWORD_TOO_SIMPLE = 'USER_NEW_PASSWORD_TOO_SIMPLE',
+  ADDON_PASSWORD_INVALID = 'ADDON_PASSWORD_INVALID',
   // Database
   DATABASE_ERROR = 'DATABASE_ERROR',
   // Encryption
@@ -54,6 +55,10 @@ export const ErrorMap: Record<ErrorCode, ErrorDetails> = {
   [ErrorCode.USER_NEW_PASSWORD_TOO_SIMPLE]: {
     statusCode: 400,
     message: 'New password is too simple',
+  },
+  [ErrorCode.ADDON_PASSWORD_INVALID]: {
+    statusCode: 401,
+    message: 'Invalid addon password',
   },
   [ErrorCode.DATABASE_ERROR]: {
     statusCode: 500,
@@ -134,6 +139,8 @@ export const REDIS_PREFIX = 'aiostreams:';
 
 export const DEFAULT_PRECACHE_SELECTOR =
   'count(cached(streams)) == 0 ? uncached(streams) : []';
+
+export const DEFAULT_PRELOAD_SELECTOR = 'slice(streams, 0, 2)';
 
 export const GDRIVE_FORMATTER = 'gdrive';
 export const LIGHT_GDRIVE_FORMATTER = 'lightgdrive';
@@ -816,6 +823,45 @@ export const DEDUPLICATOR_KEYS = [
   'infoHash',
   'smartDetect',
 ] as const;
+
+export const DEDUPLICATOR_LIBRARY_BEHAVIOURS = [
+  'ignore',
+  'prefer',
+  'exclusive',
+] as const;
+
+export const SMART_DETECT_ATTRIBUTES = [
+  'size',
+  'bitrate',
+  'resolution',
+  'quality',
+  'encode',
+  'releaseGroup',
+  'edition',
+  'remastered',
+  'network',
+  'container',
+  'visualTags',
+  'audioTags',
+  'audioChannels',
+  'languages',
+] as const;
+
+export type SmartDetectAttribute = (typeof SMART_DETECT_ATTRIBUTES)[number];
+
+export const DEFAULT_SMART_DETECT_ATTRIBUTES: SmartDetectAttribute[] = [
+  'size',
+  'resolution',
+  'quality',
+  'visualTags',
+  'audioTags',
+  'audioChannels',
+  'languages',
+  'encode',
+  'edition',
+  'network',
+  'remastered',
+];
 
 export const AUTO_PLAY_ATTRIBUTES = [
   'service',

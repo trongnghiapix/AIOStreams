@@ -11,6 +11,7 @@ import {
   Env,
   getSimpleTextHash,
   getTimeTakenSincePoint,
+  formatMilliseconds,
   maskSensitiveInfo,
   Cache,
   ExtrasParser,
@@ -42,11 +43,16 @@ import {
   StreamPrecomputer as Precomputer,
   StreamUtils,
   StreamContext,
+  populateNzbFallbacks,
+  preloadStreams,
 } from './streams/index.js';
 import { resolveServiceWrappedStreams } from './streams/serviceWrapper.js';
+import type { ServiceWrapServiceTiming } from './streams/serviceWrapper.js';
+import type { PrecomputeSubTimings } from './streams/precomputer.js';
 import { getAddonName } from './utils/general.js';
 import { Metadata } from './metadata/utils.js';
 import { StreamSelector } from './parser/streamExpression.js';
+
 const logger = createLogger('core');
 
 const shuffleCache = Cache.getInstance<string, MetaPreview[]>('shuffle');
@@ -61,7 +67,7 @@ const mergedCatalogCache = Cache.getInstance<string, MergedCatalogSkipState>(
 const precacheCache = Cache.getInstance<string, boolean>(
   'precache',
   undefined,
-  'memory'
+  Env.REDIS_URI ? 'redis' : 'memory'
 );
 
 export interface AIOStreamsError {
@@ -188,11 +194,16 @@ export class AIOStreams {
     // Store context for later retrieval
     this.streamContext = context;
 
+    this.filterer.resetFilterTimings();
+    this.precomputer.resetPrecomputeTimings();
+
+    const fetchStart = Date.now();
     const {
       streams,
       errors,
       statistics: addonStatistics,
     } = await this.fetcher.fetch(supportedAddons, context);
+    const fetchMs = Date.now() - fetchStart;
 
     if (
       this.userData.statistics?.enabled &&
@@ -209,8 +220,19 @@ export class AIOStreams {
       }))
     );
 
-    const processResults = await this._processStreams(streams, context);
+    const processResults = await this._processStreams(
+      streams,
+      context,
+      false,
+      this.userData.nzbFailover?.enabled && !preCaching
+        ? {
+            count: this.userData.nzbFailover.count ?? 3,
+            position: this.userData.nzbFailover.position ?? 'last',
+          }
+        : undefined
+    );
     let finalStreams = processResults.streams;
+    const pipelineTimings = processResults.timings;
     errors.push(...processResults.errors);
 
     // if this.userData.precacheNextEpisode is true, start a new thread to request the next episode, check if
@@ -239,6 +261,70 @@ export class AIOStreams {
             });
           });
         });
+      }
+    }
+
+    // preload selected streams
+    if (this.userData.preloadStreams?.enabled && !preCaching) {
+      // Skip if the same user has already triggered a preload for this item recently
+      let shouldPreload = true;
+      if (Env.PRELOAD_MIN_INTERVAL > 0) {
+        const preloadCooldownKey = `preload-${type}-${id}-${this.userData.uuid}`;
+        const recentlyPreloaded = await precacheCache.get(
+          preloadCooldownKey,
+          false
+        );
+        if (recentlyPreloaded) {
+          logger.info(
+            `Preload for ${type} ${id} skipped — within cooldown (${precacheCache.getTTL(preloadCooldownKey)} seconds left).`
+          );
+          shouldPreload = false;
+        } else {
+          await precacheCache.set(
+            preloadCooldownKey,
+            true,
+            Env.PRELOAD_MIN_INTERVAL
+          );
+        }
+      }
+
+      if (shouldPreload) {
+        const preloadSelector =
+          this.userData.preloadStreams.selector ??
+          constants.DEFAULT_PRELOAD_SELECTOR;
+        const streamSelector = new StreamSelector(
+          context.toExpressionContext()
+        );
+        let streamsToPreload: ParsedStream[];
+        const preloadSingleStream =
+          this.userData.preloadStreams?.singleStream !== false;
+        try {
+          streamsToPreload = (
+            await streamSelector.select(finalStreams, preloadSelector)
+          )
+            .filter((s) => s.url)
+            .slice(0, preloadSingleStream ? 1 : Env.MAX_BACKGROUND_PINGS);
+        } catch (selectorError) {
+          logger.warn('Preload selector evaluation failed', {
+            selector: preloadSelector,
+            error:
+              selectorError instanceof Error
+                ? selectorError.message
+                : String(selectorError),
+          });
+          streamsToPreload = [];
+        }
+        if (streamsToPreload.length > 0) {
+          setImmediate(() => {
+            preloadStreams(streamsToPreload).catch((error) => {
+              logger.error('Error during stream preloading:', {
+                error: error instanceof Error ? error.message : String(error),
+                type,
+                id,
+              });
+            });
+          });
+        }
       }
     }
 
@@ -289,6 +375,180 @@ export class AIOStreams {
         }
       }
     }
+
+    if (
+      this.userData.statistics?.enabled &&
+      this.userData.statistics?.statsToShow?.includes('timing')
+    ) {
+      const filterTimings = this.filterer.getFilterTimings();
+      const accumulatedPrecompute = this.precomputer.getPrecomputeTimings();
+      // totalMs uses pipeline-phase timings only (fetchMs already contains the fetcher filter/precompute)
+      const totalMs =
+        fetchMs +
+        pipelineTimings.serviceWrapMs +
+        pipelineTimings.filterMs +
+        pipelineTimings.deduplicationMs +
+        pipelineTimings.precomputeMs +
+        pipelineTimings.sortMs +
+        pipelineTimings.limitMs +
+        pipelineTimings.selMs;
+
+      const fmtMs = (ms: number) => formatMilliseconds(ms);
+
+      {
+        const lines: string[] = [
+          `📥 Fetch: ${fmtMs(fetchMs)}`,
+          `🔗 Service Wrap: ${fmtMs(pipelineTimings.serviceWrapMs)}`,
+        ];
+        // Show accumulated filter total (fetcher + optional re-filter pass)
+        if (filterTimings.totalMs > 0) {
+          lines.push(`🔍 Filter: ${fmtMs(filterTimings.totalMs)}`);
+        }
+        lines.push(
+          `🔄 Dedup: ${fmtMs(pipelineTimings.deduplicationMs)}`,
+          // Show accumulated precompute total (fetcher + optional pipeline pass)
+          `⚙️ Precompute: ${fmtMs(accumulatedPrecompute.totalMs)}`,
+          `📊 Sort: ${fmtMs(pipelineTimings.sortMs)}`,
+          `✂️ Limit: ${fmtMs(pipelineTimings.limitMs)}`,
+          `🎯 SEL: ${fmtMs(pipelineTimings.selMs)}`,
+          `${'─'.repeat(20)}`,
+          `⏱️ Total: ~${fmtMs(totalMs)}`
+        );
+        statistics.push({
+          title: '⏱️ Pipeline Timing',
+          description: lines.join('\n'),
+        });
+      }
+
+      if (filterTimings.calls > 0) {
+        const lines: string[] = [
+          `⏱️ Total: ${fmtMs(filterTimings.totalMs)} (${filterTimings.calls} call${filterTimings.calls > 1 ? 's' : ''})`,
+          `${'─'.repeat(20)}`,
+          `📝 Metadata: ${fmtMs(filterTimings.metadataMs)}`,
+          `⚡ Expressions: ${fmtMs(filterTimings.expressionMs)}`,
+          `🔨 Regex compile: ${fmtMs(filterTimings.regexCompileMs)}`,
+          `🧪 Regex test: ${fmtMs(filterTimings.regexTestMs)}`,
+          `🌪️ Filter pass: ${fmtMs(filterTimings.filterPassMs)}`,
+        ];
+        const { phases } = filterTimings;
+        const phaseRows: Array<[string, typeof phases.titleMatch, string]> = [
+          ['Title match', phases.titleMatch, '🔤'],
+          ['Year match', phases.yearMatch, '📅'],
+          ['Season/Ep', phases.seasonEpisodeMatch, '📺'],
+        ];
+        const activePhases = phaseRows.filter(
+          ([, p]) => (p as typeof phases.titleMatch).count > 0
+        );
+        if (activePhases.length > 0) {
+          lines.push(``, `🔍 Per-stream phases:`);
+          for (const [label, p, emoji] of activePhases) {
+            const phase = p as typeof phases.titleMatch;
+            lines.push(`  ${emoji} ${label}: ${fmtMs(phase.totalMs)}`);
+          }
+        }
+        statistics.push({
+          title: '🔍 Filter Breakdown',
+          description: lines.join('\n'),
+        });
+      }
+
+      if (accumulatedPrecompute.totalMs > 0) {
+        const sub = accumulatedPrecompute;
+        const fetcherPrecomputeMs =
+          accumulatedPrecompute.totalMs - pipelineTimings.precomputeMs;
+        const rows: Array<[string, number, string]> = [
+          ['Preferred regex', sub.preferredRegexMs, '⭐'],
+          ['Ranked regex', sub.rankedRegexMs, '📈'],
+          ['Ranked SEL', sub.rankedSELMs, '🎯'],
+          ['Preferred SEL', sub.preferredSELMs, '✨'],
+        ];
+        const activeRows = rows.filter(([, ms]) => (ms as number) > 0);
+        if (activeRows.length > 0) {
+          const lines: string[] = [
+            `⏱️ Total: ${fmtMs(accumulatedPrecompute.totalMs)}`,
+          ];
+          if (fetcherPrecomputeMs > 0 && pipelineTimings.precomputeMs > 0) {
+            lines.push(
+              `    • Fetcher: ${fmtMs(fetcherPrecomputeMs)}`,
+              `    • Pipeline: ${fmtMs(pipelineTimings.precomputeMs)}`
+            );
+          }
+          lines.push(`${'─'.repeat(20)}`);
+          for (const [label, ms, emoji] of activeRows) {
+            lines.push(`${emoji} ${label}: ${fmtMs(ms as number)}`);
+          }
+          statistics.push({
+            title: '⚙️ Precompute Breakdown',
+            description: lines.join('\n'),
+          });
+        }
+      }
+
+      if (
+        pipelineTimings.serviceWrapMs > 0 &&
+        pipelineTimings.serviceWrapTimings
+      ) {
+        const entries = Object.entries(pipelineTimings.serviceWrapTimings);
+        if (entries.length > 0) {
+          const lines: string[] = [
+            `⏱️ Total: ${fmtMs(pipelineTimings.serviceWrapMs)} (${entries.length} service${entries.length > 1 ? 's' : ''})`,
+            `${'─'.repeat(20)}`,
+          ];
+          for (let i = 0; i < entries.length; i++) {
+            const [serviceId, t] = entries[i];
+            const shortName =
+              (
+                constants.SERVICE_DETAILS as Record<
+                  string,
+                  { shortName?: string }
+                >
+              )[serviceId]?.shortName ?? serviceId;
+            let statusStr = '';
+            if (t.hasError) {
+              statusStr = ' | ❌ Error';
+            } else {
+              const cachedStr =
+                t.cachedCount > 0 ? ` | ✅ ${t.cachedCount} cached` : '';
+              const uncachedStr =
+                t.uncachedCount > 0 ? ` | ⏳ ${t.uncachedCount} uncached` : '';
+              statusStr = `${cachedStr}${uncachedStr}`;
+            }
+
+            lines.push(
+              `☁️ ${shortName} (${t.torrentsIn} torrents${statusStr})`,
+              `    • Magnet check: ${fmtMs(t.magnetCheckMs)}`,
+              `    • Processing: ${fmtMs(t.processingMs)}`,
+              `    • Total: ${fmtMs(t.totalMs)}`
+            );
+            if (i < entries.length - 1) {
+              lines.push(``);
+            }
+          }
+          statistics.push({
+            title: '🔗 Service Wrap Breakdown',
+            description: lines.join('\n'),
+          });
+        }
+      }
+    }
+
+    // Optional: let presets react to final stream list (e.g. report order back to addon)
+    const byPresetType = new Map<string, ParsedStream[]>();
+    for (const s of finalStreams) {
+      const type = s.addon?.preset?.type ?? '';
+      if (type) {
+        const list = byPresetType.get(type) ?? [];
+        list.push(s);
+        byPresetType.set(type, list);
+      }
+    }
+    for (const [presetType, list] of byPresetType) {
+      const PresetClass = PresetManager.fromId(presetType);
+      if (typeof PresetClass.onStreamsReady === 'function') {
+        PresetClass.onStreamsReady(list);
+      }
+    }
+
     // return the final list of streams, followed by the error streams.
     logger.info(
       `Returning ${finalStreams.length} streams and ${errors.length} errors and ${statistics.length} statistic`
@@ -1356,13 +1616,31 @@ export class AIOStreams {
                     constants.BUILTIN_SUPPORTED_SERVICES as readonly string[]
                   ).includes(s.id)
               ),
+              presets: this.userData.presets?.map((p) =>
+                p.instanceId === preset.instanceId
+                  ? {
+                      ...p,
+                      options: {
+                        ...p.options,
+                        // only keep non-builtin specified services.
+                        services: p.options.services?.filter(
+                          (s: string) =>
+                            !(
+                              constants.BUILTIN_SUPPORTED_SERVICES as readonly string[]
+                            ).includes(s)
+                        ),
+                      },
+                    }
+                  : p
+              ),
             }
           : this.userData;
 
-        const addons = await Preset.generateAddons(
-          normalUserData,
-          preset.options
-        );
+        const options = shouldServiceWrap
+          ? { ...preset.options, services: [] }
+          : preset.options;
+
+        const addons = await Preset.generateAddons(normalUserData, options);
 
         // When service wrapping, don't add addons that fell into P2P mode
         // due to having no usable services — those would be unmarked duplicates
@@ -1394,10 +1672,22 @@ export class AIOStreams {
             const p2pUserData: UserData = {
               ...this.userData,
               services: [], // empty services → preset falls into P2P codepath
+              presets: this.userData.presets?.map((p) =>
+                p.instanceId === preset.instanceId
+                  ? {
+                      ...p,
+                      options: {
+                        ...p.options,
+                        services: [], // remove specified services to avoid errors.
+                      },
+                    }
+                  : p
+              ),
             };
+            const p2pOptions = { ...preset.options, services: [] };
             const p2pAddons = await Preset.generateAddons(
               p2pUserData,
-              preset.options
+              p2pOptions
             );
             // Only keep addons that are actually P2P (not debrid addons from presets that don't care about services)
             this.addons.push(
@@ -2212,16 +2502,50 @@ export class AIOStreams {
   private async _processStreams(
     streams: ParsedStream[],
     context: StreamContext,
-    isMeta: boolean = false
-  ): Promise<{ streams: ParsedStream[]; errors: AIOStreamsError[] }> {
+    isMeta: boolean = false,
+    nzbFailoverOpts?: {
+      count: number;
+      position: 'beforeLimiting' | 'beforeSEL' | 'last';
+    }
+  ): Promise<{
+    streams: ParsedStream[];
+    errors: AIOStreamsError[];
+    timings: {
+      metaFilterMs: number;
+      serviceWrapMs: number;
+      serviceWrapTimings?: Record<string, ServiceWrapServiceTiming>;
+      filterMs: number;
+      deduplicationMs: number;
+      precomputeMs: number;
+      precomputeSubTimings?: PrecomputeSubTimings;
+      sortMs: number;
+      limitMs: number;
+      selMs: number;
+    };
+  }> {
     const { type, id, queryType } = context;
     let processedStreams = streams;
     let errors: AIOStreamsError[] = [];
 
+    let metaFilterMs = 0;
+    let serviceWrapMs = 0;
+    let serviceWrapTimings:
+      | Record<string, ServiceWrapServiceTiming>
+      | undefined;
+    let filterMs = 0;
+    let deduplicationMs = 0;
+    let precomputeMs = 0;
+    let precomputeSubTimings: PrecomputeSubTimings | undefined;
+    let sortMs = 0;
+    let limitMs = 0;
+    let selMs = 0;
+
     if (isMeta) {
       // Run SeaDex precompute before filter so seadex() works in Included SEL
       await this.precomputer.precomputeSeaDexOnly(processedStreams, context);
+      const metaFilterStart = Date.now();
       processedStreams = await this.filterer.filter(processedStreams, context);
+      metaFilterMs = Date.now() - metaFilterStart;
     }
 
     // Resolve service-wrapped P2P streams through debrid services.
@@ -2230,23 +2554,32 @@ export class AIOStreams {
     // Capture existing stream IDs before service wrapping so we can skip
     // per-stream precomputation for streams already precomputed in the fetcher.
     const preServiceWrapIds = new Set(processedStreams.map((s) => s.id));
+    const serviceWrapStart = Date.now();
     const resolvedResults = await resolveServiceWrappedStreams(
       processedStreams,
       context,
       this.userData,
       this.addons
     );
+    serviceWrapMs = Date.now() - serviceWrapStart;
     processedStreams = resolvedResults.streams;
     errors.push(...resolvedResults.errors);
+    if (resolvedResults.serviceTimings) {
+      serviceWrapTimings = resolvedResults.serviceTimings;
+    }
 
     // Re-run filters on streams that were just service-wrapped.
     // They now have debrid-specific info (service, cached status, etc.)
     // that wasn't available during the first filter pass.
     if (resolvedResults.hasNewStreams) {
+      const filterStart = Date.now();
       processedStreams = await this.filterer.filter(processedStreams, context);
+      filterMs = Date.now() - filterStart;
     }
 
+    const dedupStart = Date.now();
     processedStreams = await this.deduplicator.deduplicate(processedStreams);
+    deduplicationMs = Date.now() - dedupStart;
 
     if (isMeta || resolvedResults.hasNewStreams) {
       // When service wrapping added new streams and we're not in meta mode,
@@ -2256,19 +2589,70 @@ export class AIOStreams {
         !isMeta && resolvedResults.hasNewStreams
           ? preServiceWrapIds
           : undefined;
-      await this.precomputer.precomputePreferred(
+      const precomputeStart = Date.now();
+      precomputeSubTimings = await this.precomputer.precomputePreferred(
         processedStreams,
         context,
         skipPerStreamIds
       );
+      precomputeMs = Date.now() - precomputeStart;
     }
 
-    let finalStreams = await this.filterer.applyStreamExpressionFilters(
-      await this.limiter.limit(
-        await this.sorter.sort(processedStreams, context)
-      ),
+    const sortStart = Date.now();
+    let finalStreams = await this.sorter.sort(processedStreams, context);
+    sortMs = Date.now() - sortStart;
+
+    // NZB failover: beforeLimiting position - widest pool (after sort, before limit+SEL)
+    if (nzbFailoverOpts?.position === 'beforeLimiting') {
+      await populateNzbFallbacks(
+        finalStreams,
+        nzbFailoverOpts.count,
+        this.userData.uuid
+      ).catch((error) => {
+        logger.error('Error during NZB failover population (beforeLimiting):', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+
+    const limitStart = Date.now();
+    finalStreams = await this.limiter.limit(finalStreams);
+    limitMs = Date.now() - limitStart;
+
+    // NZB failover: beforeSEL position - after limiting, before SEL expression filters
+    if (nzbFailoverOpts?.position === 'beforeSEL') {
+      await populateNzbFallbacks(
+        finalStreams,
+        nzbFailoverOpts.count,
+        this.userData.uuid
+      ).catch((error) => {
+        logger.error('Error during NZB failover population (beforeSEL):', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+
+    const selStart = Date.now();
+    finalStreams = await this.filterer.applyStreamExpressionFilters(
+      finalStreams,
       context
     );
+    selMs = Date.now() - selStart;
+
+    // NZB failover: last position (default) - after limiting and SEL, cleanest pool
+    if (!nzbFailoverOpts?.position || nzbFailoverOpts.position === 'last') {
+      if (nzbFailoverOpts) {
+        await populateNzbFallbacks(
+          finalStreams,
+          nzbFailoverOpts.count,
+          this.userData.uuid
+        ).catch((error) => {
+          logger.error('Error during NZB failover population (last):', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
+    }
 
     this.filterer.generateFilterSummary(streams, finalStreams, type, id);
 
@@ -2309,45 +2693,22 @@ export class AIOStreams {
       finalStreams = streamsWithExternalDownloads;
     }
 
-    return { streams: finalStreams, errors };
-  }
-
-  private async _fetchAndHandleRedirects(stream: ParsedStream, id: string) {
-    const wrapper = new Wrapper(stream.addon);
-    if (!stream.url) {
-      throw new Error(`Stream URL is undefined`);
-    }
-    const initialResponse = await wrapper.makeRequest(stream.url, {
-      timeout: 30000,
-      rawOptions: { redirect: 'manual' },
-    });
-
-    // If it's a redirect, handle it
-    if (initialResponse.status >= 300 && initialResponse.status < 400) {
-      const redirectUrl = initialResponse.headers.get('Location');
-      if (!redirectUrl) {
-        throw new Error(
-          `Redirect response (${initialResponse.status}) has no Location header.`
-        );
-      }
-
-      const absoluteRedirectUrl = new URL(redirectUrl, stream.url).toString();
-      const originalHost = new URL(stream.url).host;
-      const redirectHost = new URL(absoluteRedirectUrl).host;
-
-      if (redirectHost !== originalHost) {
-        throw new Error(
-          `Host mismatch during redirect: original (${originalHost}) vs redirect (${redirectHost}). Not following.`
-        );
-      }
-
-      logger.debug(
-        `Following same-domain redirect to ${makeUrlLogSafe(absoluteRedirectUrl)} for precaching ${id}`
-      );
-      return wrapper.makeRequest(absoluteRedirectUrl, { timeout: 30000 });
-    }
-
-    return initialResponse;
+    return {
+      streams: finalStreams,
+      errors,
+      timings: {
+        metaFilterMs,
+        serviceWrapMs,
+        serviceWrapTimings,
+        filterMs,
+        deduplicationMs,
+        precomputeMs,
+        precomputeSubTimings,
+        sortMs,
+        limitMs,
+        selMs,
+      },
+    };
   }
 
   private async precacheNextEpisode(context: StreamContext) {
@@ -2426,38 +2787,32 @@ export class AIOStreams {
       return;
     }
 
-    const selectedStream = selectedStreams[0];
-    if (!selectedStream || !selectedStream.url) {
-      logger.debug(`Skipping precaching ${id} as selected stream had no URL`);
+    const singleStreamOnly = this.userData.precacheSingleStream !== false;
+    const streamsToCache = selectedStreams
+      .filter((s) => s.url)
+      .slice(0, singleStreamOnly ? 1 : Env.MAX_BACKGROUND_PINGS);
+
+    if (streamsToCache.length === 0) {
+      logger.debug(`Skipping precaching ${id} as no selected stream had a URL`);
       return;
     }
 
     logger.debug(
-      `Selected following stream for precaching:\n${selectedStream.originalName}\n${selectedStream.originalDescription}`
+      `Precaching ${streamsToCache.length} stream(s) for ${id} (${type})`
     );
 
-    try {
-      const response = await this._fetchAndHandleRedirects(
-        selectedStream,
-        precacheId
-      );
-      logger.debug(`Response: ${response.status} ${response.statusText}`);
-      if (!response.ok) {
-        throw new Error(
-          `Final Response not OK: ${response.status} ${response.statusText}`
-        );
-      }
-      const cacheKey = `precache-${type}-${id}-${this.userData.uuid}`;
-      await precacheCache.set(
-        cacheKey,
-        true,
-        Env.PRECACHE_NEXT_EPISODE_MIN_INTERVAL
-      );
-      logger.info(`Successfully precached a stream for ${id} (${type})`);
-    } catch (error) {
-      logger.error(`Error pinging url of first uncached stream`, {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    const cacheKey = `precache-${type}-${id}-${this.userData.uuid}`;
+    await precacheCache.set(
+      cacheKey,
+      true,
+      Env.PRECACHE_NEXT_EPISODE_MIN_INTERVAL
+    );
+
+    // preloadStreams handles concurrency limiting and per-stream error logging
+    await preloadStreams(streamsToCache);
+
+    logger.info(
+      `Successfully precached ${streamsToCache.length} stream(s) for ${id} (${type})`
+    );
   }
 }

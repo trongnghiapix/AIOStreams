@@ -279,6 +279,19 @@ export async function deleteUserConfig(uuid: string, password: string) {
 }
 
 /**
+ * Change user password
+ */
+export async function changePassword(
+  uuid: string,
+  currentPassword: string,
+  newPassword: string
+) {
+  return api<{ encryptedPassword: string }>('POST /user/password', {
+    body: { uuid, currentPassword, newPassword },
+  });
+}
+
+/**
  * Resolve synced items (regex patterns and/or stream expressions) from URLs
  */
 export async function resolveSynced(
@@ -352,6 +365,19 @@ export async function exchangeGDriveCode(code: string) {
  */
 export async function fetchTemplates() {
   return api<any[]>('GET /templates');
+}
+
+/**
+ * Fetch a Stremio manifest from a URL
+ */
+export async function fetchManifest(url: string): Promise<any> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch manifest: ${response.status} ${response.statusText}`
+    );
+  }
+  return response.json();
 }
 
 export type {

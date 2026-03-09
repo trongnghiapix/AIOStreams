@@ -118,7 +118,9 @@ class FileParser {
     }
     // prevent the title from being parsed for info
     if (parsed.title && parsed.title.length > 4) {
-      filename = filename.replace(parsed.title, '').trim();
+      const escapedTitle = parsed.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const titleRegex = new RegExp(escapedTitle.replace(/ /g, '[._ ]'), 'i');
+      filename = filename.replace(titleRegex, '').trim();
       filename = filename.replace(/\s+/g, '.').replace(/^\.+|\.+$/g, '');
     }
     const resolution =
@@ -174,8 +176,10 @@ class FileParser {
       releaseGroup,
       title,
       year,
-      edition: parsed.edition,
-      remastered: parsed.remastered ?? false,
+      subbed: parsed.subbed ?? false,
+      dubbed: parsed.dubbed ?? false,
+      editions: parsed.editions,
+      regraded: parsed.regraded ?? false,
       repack: parsed.repack ?? false,
       uncensored: parsed.uncensored ?? false,
       unrated: parsed.unrated ?? false,
@@ -186,6 +190,7 @@ class FileParser {
       seasons: parsed.seasons,
       volumes: parsed.volumes,
       episodes: parsed.episodes,
+      date: parsed.date,
       seasonPack: !!(parsed.seasons?.length && !parsed.episodes?.length),
     };
   }

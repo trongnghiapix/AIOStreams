@@ -197,13 +197,21 @@ const DeduplicatorOptions = z.object({
   live: DeduplicatorMode.optional(),
   youtube: DeduplicatorMode.optional(),
   external: DeduplicatorMode.optional(),
+  smartDetectAttributes: z
+    .array(z.enum(constants.SMART_DETECT_ATTRIBUTES))
+    .optional(),
+  smartDetectRounding: z.number().min(1).max(50).optional(),
+  libraryBehaviour: z
+    .enum(constants.DEDUPLICATOR_LIBRARY_BEHAVIOURS)
+    .optional(),
 });
 
-const OptionDefinition = z.object({
+const OptionDefinition = z.looseObject({
   id: z.string().min(1),
-  name: z.string().min(1),
-  description: z.string().min(1),
+  name: z.string(),
+  description: z.string(),
   showInSimpleMode: z.boolean().optional(),
+  advanced: z.boolean().optional(),
   emptyIsUndefined: z.boolean().optional(),
   type: z.enum([
     'string',
@@ -357,6 +365,17 @@ export const UserDataSchema = z.object({
   addonLogo: z.string().url().optional(),
   addonBackground: z.string().url().optional(),
   addonDescription: z.string().min(1).optional(),
+  appliedTemplates: z
+    .array(
+      z.object({
+        id: z.string(),
+        version: z.string(),
+        url: z.string().optional(),
+        dismissedVersion: z.string().optional(), // dismissed update notification up to this version
+        ignored: z.boolean().optional(), // permanently ignore all future update notifications
+      })
+    )
+    .optional(),
   excludedResolutions: z.array(Resolutions).optional(),
   includedResolutions: z.array(Resolutions).optional(),
   requiredResolutions: z.array(Resolutions).optional(),
@@ -590,7 +609,7 @@ export const UserDataSchema = z.object({
     .object({
       enabled: z.boolean().optional(),
       position: z.enum(['top', 'bottom']).optional(),
-      statsToShow: z.array(z.enum(['addon', 'filter'])).optional(),
+      statsToShow: z.array(z.enum(['addon', 'filter', 'timing'])).optional(),
     })
     .optional(),
   tmdbAccessToken: z.string().optional(),
@@ -644,8 +663,18 @@ export const UserDataSchema = z.object({
   /** @deprecated Use precacheSelector instead */
   alwaysPrecache: z.boolean().optional(),
   /** @deprecated Use precacheSelector instead */
-  precacheCondition: z.string().optional(),
-  precacheSelector: z.string().optional(),
+  precacheCondition: z.string().min(1).max(Env.MAX_SEL_LENGTH).optional(),
+  precacheSelector: z.string().min(1).max(Env.MAX_SEL_LENGTH).optional(),
+  /** When false, all streams returned by precacheSelector are pinged; defaults to true (first stream only). */
+  precacheSingleStream: z.boolean().optional(),
+  preloadStreams: z
+    .object({
+      enabled: z.boolean().optional(),
+      selector: z.string().min(1).max(Env.MAX_SEL_LENGTH).optional(),
+      /** When false, all streams returned by selector are pinged; defaults to true (first stream only). */
+      singleStream: z.boolean().optional(),
+    })
+    .optional(),
   services: ServiceList.optional(),
   presets: PresetList,
   catalogModifications: z.array(CatalogModification).optional(),
@@ -655,6 +684,13 @@ export const UserDataSchema = z.object({
 
   autoRemoveDownloads: z.boolean().optional(),
   checkOwned: z.boolean().optional().default(true),
+  nzbFailover: z
+    .object({
+      enabled: z.boolean().optional(),
+      count: z.number().min(1).optional(),
+      position: z.enum(['beforeLimiting', 'beforeSEL', 'last']).optional(),
+    })
+    .optional(),
   serviceWrap: z
     .object({
       enabled: z.boolean().optional(),
@@ -850,16 +886,18 @@ export const ParsedFileSchema = z.object({
   audioTags: z.array(z.string()),
   languages: z.array(z.string()),
   subtitleLanguages: z.array(z.string()).optional(),
+  subbed: z.boolean().optional(),
+  dubbed: z.boolean().optional(),
   title: z.string().optional(),
   year: z.coerce.string().optional(),
   seasons: z.array(z.number()).optional(),
   volumes: z.array(z.number()).optional(),
   folderSeasons: z.array(z.number()).optional(),
   folderEpisodes: z.array(z.number()).optional(),
+  date: z.string().optional(),
   episodes: z.array(z.number()).optional(),
-  // seasonEpisode: z.array(z.string()).optional(),
-  edition: z.string().optional(),
-  remastered: z.boolean().optional(),
+  editions: z.array(z.string()).optional(),
+  regraded: z.boolean().optional(),
   repack: z.boolean().optional(),
   uncensored: z.boolean().optional(),
   unrated: z.boolean().optional(),
@@ -956,6 +994,7 @@ export const ParsedStreamSchema = z.object({
     .optional(),
   originalName: z.string().optional(),
   originalDescription: z.string().optional(),
+  extra: z.record(z.string(), z.any()).optional(),
 });
 
 export type ParsedFile = z.infer<typeof ParsedFileSchema>;
@@ -1142,6 +1181,7 @@ export const AIOStream = StreamSchema.extend({
       type: StreamTypes.optional(),
       indexer: z.string().optional(),
       age: z.number().or(z.string()).optional(), // Age in hours since upload
+      nzbUrl: z.string().or(z.null()).optional(),
       torrent: z
         .object({
           infoHash: z.string().min(1).optional(),
@@ -1194,6 +1234,7 @@ const PresetMetadataSchema = PresetMinimalMetadataSchema.extend({
 const StatusResponseSchema = z.object({
   version: z.string(),
   tag: z.string(),
+  channel: z.enum(['stable', 'nightly', 'dev']),
   commit: z.string(),
   buildTime: z.string(),
   commitTime: z.string(),
@@ -1202,6 +1243,7 @@ const StatusResponseSchema = z.object({
     baseUrl: z.string().url().optional(),
     addonName: z.string(),
     customHtml: z.string().optional(),
+    featuredTemplateIds: z.array(z.string()).optional(),
     alternateDesign: z.boolean(),
     protected: z.boolean(),
     regexAccess: z.object({
@@ -1257,6 +1299,8 @@ const StatusResponseSchema = z.object({
       maxStreamExpressions: z.number(),
       maxStreamExpressionsTotalCharacters: z.number(),
       maxAddons: z.number(),
+      maxNzbFailoverCount: z.number(),
+      maxBackgroundPings: z.number(),
     }),
   }),
 });
@@ -1306,8 +1350,19 @@ export const TemplateSchema = z.object({
     serviceRequired: z.boolean().optional(), // whether a service is required for this template or not.
     setToSaveInstallMenu: z.boolean().optional().default(true), // whether to set the menu to save-install after importing the template
     sourceUrl: z.url().optional(), // URL from which the template was imported (for auto-updates)
+    inputs: z.array(OptionDefinition).optional(), // template-creator-defined options shown to the user before loading
+    changelog: z
+      .array(
+        z.object({
+          date: z.string(),
+          version: z.string(),
+          content: z.string(),
+        })
+      )
+      .optional(), // version history entries for tracking updates applied by users
+    changelogUrl: z.url().optional(), // URL to a remote CHANGELOG.md file (alternative to inline changelog)
   }),
-  config: UserDataSchema.partial(),
+  config: z.any(),
 });
 
 export type Template = z.infer<typeof TemplateSchema>;

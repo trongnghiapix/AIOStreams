@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { constants, ServiceId } from '../utils/index.js';
+import { constants, ServiceId, Cache, Env } from '../utils/index.js';
 
 type DebridErrorCode =
   | 'BAD_GATEWAY'
@@ -69,6 +69,75 @@ export class DebridError extends Error {
     if (options.code) {
       this.code = options.code;
     }
+  }
+}
+
+/**
+ * Codes that are service-level failures (auth, quota, rate-limit) rather than
+ * content-level.
+ */
+const DEBRID_NON_RETRYABLE_CODES = new Set<DebridErrorCode | undefined>([
+  'UNAUTHORIZED',
+  'FORBIDDEN',
+  'TOO_MANY_REQUESTS',
+  'PAYMENT_REQUIRED',
+  'STORE_LIMIT_EXCEEDED',
+  'NOT_IMPLEMENTED',
+]);
+
+/**
+ * Shared cross-service failure cache
+ */
+export class DebridFailureCache {
+  private static getCache() {
+    return Cache.getInstance<
+      string,
+      { message: string; code?: DebridErrorCode; statusCode?: number }
+    >('debrid:failure', 10_000, Env.REDIS_URI ? 'redis' : 'sql');
+  }
+
+  /**
+   * Check whether a known failure is cached for this item and throw if so.
+   */
+  static async check(
+    serviceId: ServiceId,
+    type: 'torrent' | 'usenet',
+    key: string
+  ): Promise<void> {
+    const cached = await DebridFailureCache.getCache().get(
+      `${serviceId}:${type}:${key}`
+    );
+    if (cached) {
+      throw new DebridError(cached.message, {
+        statusCode: cached.statusCode ?? 400,
+        statusText: 'Bad Request',
+        code: cached.code,
+        headers: {},
+        body: null,
+        type: 'api_error',
+      });
+    }
+  }
+
+  /**
+   * Persist a content-level failure so future requests skip this item
+   */
+  static async mark(
+    serviceId: ServiceId,
+    type: 'torrent' | 'usenet',
+    key: string,
+    error: DebridError
+  ): Promise<void> {
+    if (DEBRID_NON_RETRYABLE_CODES.has(error.code)) return;
+    await DebridFailureCache.getCache().set(
+      `${serviceId}:${type}:${key}`,
+      {
+        message: error.message,
+        code: error.code,
+        statusCode: error.statusCode,
+      },
+      Env.BUILTIN_DEBRID_ERROR_CACHE_TTL
+    );
   }
 }
 

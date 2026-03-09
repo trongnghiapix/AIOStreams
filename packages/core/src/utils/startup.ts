@@ -78,6 +78,30 @@ const logCacheTtl = (cacheName: string, ttlMap: Record<string, number>) => {
   }
 };
 
+/**
+ * Helper function to log a serviceId:time map (e.g., poll intervals, wait times)
+ */
+const logServiceTimeMap = (
+  mapName: string,
+  timeMap: Record<string, number>
+) => {
+  const indent = '        ';
+  const wildcardTime = timeMap['*'];
+  const overrides = Object.entries(timeMap).filter(([key]) => key !== '*');
+
+  logKeyValue(`${mapName}:`, '');
+
+  if (wildcardTime !== undefined) {
+    logKeyValue('Default (*):', formatMilliseconds(wildcardTime), indent);
+  }
+
+  if (overrides.length > 0) {
+    overrides.forEach(([key, value]) => {
+      logKeyValue(`${key}:`, formatMilliseconds(value), indent);
+    });
+  }
+};
+
 const logStartupInfo = () => {
   const currentTime = new Date().toISOString().replace('T', ' ').slice(0, 19);
 
@@ -696,6 +720,45 @@ const logStartupInfo = () => {
         logKeyValue('    User Agent:', Env.BUILTIN_GDRIVE_USER_AGENT, '     ');
       }
     }
+
+    // Title language scraping config
+    logKeyValue('Title Scraping:', '');
+    const titleLangs = Env.BUILTIN_SCRAPE_TITLE_LANGUAGES as
+      | Record<string, string[]>
+      | undefined;
+    if (titleLangs) {
+      const entries = Object.entries(titleLangs);
+      entries.forEach(([domain, specs]) => {
+        logKeyValue(
+          `  ${domain === '*' ? '*(default):' : `${domain}:`}`,
+          specs.join(', '),
+          '       '
+        );
+      });
+    } else {
+      const legacyAllTitles = Env.BUILTIN_SCRAPE_WITH_ALL_TITLES;
+      const legacyValue = Array.isArray(legacyAllTitles)
+        ? `all titles for: ${legacyAllTitles.join(', ')}`
+        : legacyAllTitles
+          ? 'all titles (global)'
+          : 'primary title only (default)';
+      logKeyValue('  Mode (legacy):', legacyValue, '       ');
+    }
+    logKeyValue(
+      '  Title Limit:',
+      Env.BUILTIN_SCRAPE_TITLE_LIMIT.toString(),
+      '       '
+    );
+
+    // Download timing
+    logServiceTimeMap(
+      'Download Poll Interval',
+      Env.BUILTIN_DOWNLOAD_POLL_INTERVAL
+    );
+    logServiceTimeMap(
+      'Download Max Wait Time',
+      Env.BUILTIN_DOWNLOAD_MAX_WAIT_TIME
+    );
   });
 
   // Addon Sources

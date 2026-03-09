@@ -175,7 +175,16 @@ export class MetadataService {
               const tmdbMetadata = tmdbResult.value;
               if (tmdbMetadata.title)
                 titles.unshift({ title: tmdbMetadata.title });
-              if (tmdbMetadata.titles) titles.push(...tmdbMetadata.titles);
+              // Mark TMDB titles as trusted so their language tags are preserved
+              // during deduplication even when lower-quality sources (TVDB, Trakt,
+              // IMDb) return the same title without a language tag.
+              if (tmdbMetadata.titles)
+                titles.push(
+                  ...tmdbMetadata.titles.map((t) => ({
+                    ...t,
+                    trusted: true as const,
+                  }))
+                );
               if (tmdbMetadata.year) year = tmdbMetadata.year;
               if (tmdbMetadata.yearEnd) yearEnd = tmdbMetadata.yearEnd;
               if (tmdbMetadata.originalLanguage)
@@ -230,10 +239,16 @@ export class MetadataService {
                 let seasonNumber = Number(id.season);
                 let episodeNumber = Number(id.episode);
                 if (animeEntry) {
+                  const originalSeason = seasonNumber;
                   seasonNumber = animeEntry.tmdb?.seasonNumber ?? seasonNumber;
                   if (animeEntry.tmdb?.fromEpisode) {
-                    episodeNumber =
-                      Number(animeEntry.tmdb.fromEpisode) + episodeNumber - 1;
+                    const fromEpisode = Number(animeEntry.tmdb.fromEpisode);
+                    if (
+                      seasonNumber !== originalSeason ||
+                      episodeNumber < fromEpisode
+                    ) {
+                      episodeNumber = fromEpisode + episodeNumber - 1;
+                    }
                   }
                 }
                 if (tmdbId && seasons) {
